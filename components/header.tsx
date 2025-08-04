@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import {
@@ -82,7 +82,7 @@ interface SearchResult {
     subtitle: string;
     icon: React.ComponentType<{ className?: string }>;
     href: string;
-    metadata?: any;
+    metadata?: Record<string, any>;
 }
 
 // ===========================
@@ -109,7 +109,7 @@ const getInitials = (name: string): string => {
         .slice(0, 2) || 'U';
 };
 
-const constructUserData = (authUser: any): AppUser => {
+const constructUserData = (authUser: { id: string; email?: string; user_metadata?: Record<string, any> }) => {
     const emailBase = authUser.email?.split('@')[0]?.toUpperCase() || 'USER';
     const metadata = authUser.user_metadata || {};
 
@@ -145,6 +145,10 @@ export function Header() {
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [searchLoading, setSearchLoading] = useState(false);
     const [showSearch, setShowSearch] = useState(false);
+    
+    // Refs for click-away functionality
+    const searchRef = useRef<HTMLDivElement>(null);
+    const notificationRef = useRef<HTMLDivElement>(null);
 
     // Scroll shadow
     useEffect(() => {
@@ -152,6 +156,33 @@ export function Header() {
         window.addEventListener('scroll', onScroll);
         return () => window.removeEventListener('scroll', onScroll);
     }, []);
+
+    // Click-away functionality for dropdowns
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            // Close search dropdown if clicking outside
+            if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+                setShowSearch(false);
+                setSearchQuery('');
+                setSearchResults([]);
+            }
+            
+            // Close notification dropdown if clicking outside
+            if (notificationRef.current && !notificationRef.current.contains(event.target as Node)) {
+                setShowNotifications(false);
+            }
+        };
+
+        // Add event listener when dropdowns are open
+        if (showSearch || showNotifications) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+
+        // Cleanup event listener
+        return () => {
+            document.removeEventListener('mousedown', handleClickOutside);
+        };
+    }, [showSearch, showNotifications]);
 
     // Global search functionality
     const performSearch = useCallback(async (query: string) => {
@@ -262,8 +293,8 @@ export function Header() {
             const clearedTimestamp = clearedTime ? parseInt(clearedTime) : 0;
             const now = Date.now();
             
-            // If cleared within the last 5 minutes, don't show notifications
-            if (now - clearedTimestamp < 5 * 60 * 1000) {
+            // If cleared within the last 30 minutes, don't show notifications
+            if (now - clearedTimestamp < 30 * 60 * 1000) {
                 setRecentMessages([]);
                 setUnreadCount(0);
                 return;
@@ -271,12 +302,15 @@ export function Header() {
             
             // Get recent messages from the last 24 hours that aren't from the current user
             const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+            const clearedTimeISO = new Date(clearedTimestamp).toISOString();
             
             const { data: messages, error } = await supabase
                 .from('chat')
                 .select('*')
                 .gte('created_at', yesterday)
+                .gt('created_at', clearedTimeISO) // Only show messages after last clear
                 .neq('username', user.username)
+                .neq('username', user.email?.split('@')[0]?.toUpperCase()) // Also filter by email-based username
                 .order('created_at', { ascending: false })
                 .limit(10);
 
@@ -363,9 +397,19 @@ export function Header() {
                     schema: 'public',
                     table: 'chat'
                 }, (payload) => {
-                    const newMessage = payload.new as any;
-                    // Only process messages from other users
-                    if (newMessage.username === user.username) return;
+                    const newMessage = payload.new as { id: string; content: string; username: string; room_name: string; created_at: string };
+                    
+                    // Only process messages from other users (check both username formats)
+                    const currentUsernames = [user.username, user.email?.split('@')[0]?.toUpperCase()].filter(Boolean);
+                    if (currentUsernames.includes(newMessage.username)) return;
+                    
+                    // Check if notifications were cleared recently
+                    const clearedTime = localStorage.getItem(`notifications-cleared-${user.username}`);
+                    const clearedTimestamp = clearedTime ? parseInt(clearedTime) : 0;
+                    const messageTime = new Date(newMessage.created_at).getTime();
+                    
+                    // Don't show notification if message is older than last clear
+                    if (messageTime <= clearedTimestamp) return;
                     
                     setRecentMessages(prev => {
                         const key = newMessage.room_name || 'global';
@@ -443,7 +487,17 @@ export function Header() {
         
         // Store cleared state in localStorage to persist across refreshes
         if (user) {
-            localStorage.setItem(`notifications-cleared-${user.username}`, Date.now().toString());
+            const clearTime = Date.now().toString();
+            localStorage.setItem(`notifications-cleared-${user.username}`, clearTime);
+            
+            // Also clear for email-based username if different
+            const emailUsername = user.email?.split('@')[0]?.toUpperCase();
+            if (emailUsername && emailUsername !== user.username) {
+                localStorage.setItem(`notifications-cleared-${emailUsername}`, clearTime);
+            }
+            
+            // Show confirmation toast
+            toast.success('Notifieringar rensade');
         }
     };
 
@@ -551,7 +605,7 @@ export function Header() {
                     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6, delay: 0.4 }} className="flex items-center space-x-3">
 
                         {/* Global Search */}
-                        <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="relative">
+                        <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="relative" ref={searchRef}>
                             <TooltipProvider>
                                 <Tooltip>
                                     <TooltipTrigger asChild>
@@ -662,7 +716,7 @@ export function Header() {
                         </motion.div>
 
                         {/* Real Chat Notifications */}
-                        <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="relative">
+                        <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} className="relative" ref={notificationRef}>
                             <TooltipProvider>
                                 <Tooltip>
                                     <TooltipTrigger asChild>

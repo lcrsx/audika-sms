@@ -1,16 +1,16 @@
+"use client";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 
-export default async function Page({
+export default function Page({
   searchParams,
 }: Readonly<{
-  searchParams: Promise<{ error: string }>;
+  searchParams: { error: string };
 }>) {
-  const params = await searchParams;
-
   return (
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
       {/* Animated Background Elements */}
@@ -122,9 +122,9 @@ export default async function Page({
               transition={{ duration: 0.5, delay: 0.3 }}
               className="bg-white/50 dark:bg-slate-700/50 backdrop-blur-md rounded-2xl p-6 shadow-inner"
             >
-              {params?.error ? (
+              {searchParams?.error ? (
                 <p className="text-gray-700 dark:text-gray-300 text-center">
-                  <span className="font-semibold">Error:</span> {params.error}
+                  <span className="font-semibold">Error:</span> {searchParams.error}
                 </p>
               ) : (
                 <p className="text-gray-700 dark:text-gray-300 text-center">

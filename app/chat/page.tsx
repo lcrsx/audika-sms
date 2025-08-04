@@ -2,10 +2,10 @@
 
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { MessageSquare, User, Sparkles, Globe, Users, Heart, Zap, Shield, Clock, Bell, Settings, Crown, Star, X } from 'lucide-react';
+import { MessageSquare, User, Globe, Users, Settings, X } from 'lucide-react';
 import { RealtimeChat } from '@/components/realtime-chat';
 import { useEffect, useState, useRef } from 'react';
-import { formatRelativeTime, formatTime } from '@/lib/utils';
+import { formatRelativeTime } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { generateCartoonAvatar } from '@/lib/avatar-utils';
 
@@ -56,7 +56,7 @@ const getInitials = (name: string): string => {
 
 export default function ChatPage() {
     const [userDisplayName, setUserDisplayName] = useState<string>('User');
-    const [currentUserSession, setCurrentUserSession] = useState<any>(null);
+    const [currentUserSession, setCurrentUserSession] = useState<{ id: string; email?: string; user_metadata?: { display_name?: string; full_name?: string } } | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
     const [isOnline, setIsOnline] = useState(false);
@@ -65,7 +65,7 @@ export default function ChatPage() {
     const [showSettings, setShowSettings] = useState(false);
     const [showAllUsers, setShowAllUsers] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const channelRef = useRef<any>(null);
+    const channelRef = useRef<{ subscribe: (callback: (payload: { presence: Record<string, unknown> }) => void) => { unsubscribe: () => void } } | null>(null);
     const mountedRef = useRef(true);
 
     // Load chat tabs from localStorage on mount
@@ -375,8 +375,6 @@ export default function ChatPage() {
             </div>
         );
     }
-
-    const currentTab = chatTabs.find(tab => tab.id === activeTab);
 
     return (
         <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8 relative">

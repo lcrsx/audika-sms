@@ -1,7 +1,7 @@
 'use client'
 
 import { cn, formatTime } from '@/lib/utils'
-import { Check, CheckCheck, Clock, User } from 'lucide-react'
+import { Check, CheckCheck, Clock } from 'lucide-react'
 import { useState } from 'react'
 import { type ChatEntry } from '@/hooks/use-realtime-chat'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -22,7 +22,7 @@ interface ChatEntryItemProps {
   isOwnEntry: boolean
   showHeader: boolean
   isLastMessage?: boolean
-  currentUserSession?: any
+  currentUserSession?: { id: string; email?: string; user_metadata?: any }
 }
 
 export const ChatEntryItem = ({ 

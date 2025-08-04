@@ -14,7 +14,7 @@ export default function HistorikPage() {
           Realtime Avatar Stack
         </h1>
         <p className="text-muted-foreground text-lg">
-          See who's currently online in different rooms with beautiful cartoonish avatar stacks
+          See who&apos;s currently online in different rooms with beautiful cartoonish avatar stacks
         </p>
       </div>
 
@@ -172,7 +172,7 @@ export default function HistorikPage() {
             Features & Usage
           </CardTitle>
           <CardDescription>
-            The RealtimeAvatarStack component shows who's currently online in real-time using Supabase's presence feature with beautiful cartoonish avatars.
+            The RealtimeAvatarStack component shows who&apos;s currently online in real-time using Supabase&apos;s presence feature with beautiful cartoonish avatars.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">

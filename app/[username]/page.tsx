@@ -9,9 +9,7 @@ import {
   Calendar,
   Clock,
   Activity,
-  Star,
   MessageSquare,
-  Phone,
   Bell,
   Settings as SettingsIcon,
   Edit3,
@@ -28,7 +26,38 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import React from "react";
 import { AvatarRefreshButton } from '@/components/avatar-refresh-button'
-import { generateCartoonAvatar, generatePatientAvatar } from '@/lib/avatar-utils'
+import { generatePatientAvatar } from '@/lib/avatar-utils'
+import { LucideIcon } from 'lucide-react';
+
+// Type definitions
+interface AppUser {
+  id: string;
+  username: string;
+  display_name?: string;
+  bio?: string;
+  avatar_url?: string;
+  email?: string;
+  created_at: string;
+  updated_at?: string;
+  profile_visibility?: string;
+  dark_mode?: boolean;
+  email_notifications?: boolean;
+  user_metadata?: any;
+  last_sign_in_at?: string;
+}
+
+interface StatCardProps {
+  label: string;
+  value: string | number;
+  icon: LucideIcon;
+  color: string;
+}
+
+interface InfoRowProps {
+  label: string;
+  value: string;
+  icon?: React.ReactNode;
+}
 
 // ===========================
 // UTILITY FUNCTIONS
@@ -125,7 +154,7 @@ function ProfileCard({
   );
 }
 
-function StatCard({ label, value, icon: Icon, color }: any) {
+function StatCard({ label, value, icon: Icon, color }: StatCardProps) {
   return (
       <div className="text-center p-4 rounded-xl bg-white/30 dark:bg-black/30 hover:bg-white/40 dark:hover:bg-black/40 transition-all duration-300">
         <div className={`mx-auto mb-2 p-2 rounded-lg bg-gradient-to-br ${color} w-fit`}>
@@ -137,7 +166,7 @@ function StatCard({ label, value, icon: Icon, color }: any) {
   );
 }
 
-function InfoRow({ label, value, icon }: any) {
+function InfoRow({ label, value, icon }: InfoRowProps) {
   return (
       <div className="flex items-center justify-between py-3 px-4 rounded-xl bg-white/20 dark:bg-black/20 hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300">
         <div className="flex items-center gap-3">
@@ -198,8 +227,8 @@ export default function UserProfilePage({
                                         }: {
   params: Promise<{ username: string }>;
 }) {
-  const [user, setUser] = useState<any>(null);
-  const [targetUser, setTargetUser] = useState<any>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [targetUser, setTargetUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [isOwnProfile, setIsOwnProfile] = useState(false);
 
@@ -404,7 +433,7 @@ export default function UserProfilePage({
 
           setTargetUser(mockTargetUser);
         }
-      } catch (err) {
+      } catch (_err) {
         window.location.href = '/auth/login';
       } finally {
         setLoading(false);

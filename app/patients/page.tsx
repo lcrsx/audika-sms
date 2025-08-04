@@ -6,7 +6,6 @@ import {
   Users,
   Search,
   Phone,
-  Mail,
   MapPin,
   Clock,
   MessageSquare,
@@ -17,14 +16,9 @@ import {
   Star,
   Shield,
   Plus,
-  Filter,
-  MoreHorizontal,
-  Calendar,
-  User,
   Trash2,
   RefreshCw,
   Send,
-  ExternalLink,
   Copy,
   CheckCircle,
   AlertCircle,
@@ -43,7 +37,7 @@ import { createClient } from '@/lib/supabase/client';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -135,19 +129,19 @@ export default function PatientCatalog() {
   });
   const [error, setError] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; email?: string; user_metadata?: { display_name?: string; full_name?: string } } | null>(null);
   
   // Dialog states
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [viewingPatient, setViewingPatient] = useState<Patient | null>(null);
-  const [isEditingMode, setIsEditingMode] = useState(false);
+
   const [deletingPatient, setDeletingPatient] = useState<Patient | null>(null);
   const [viewingMessages, setViewingMessages] = useState<Patient | null>(null);
-  const [patientMessages, setPatientMessages] = useState<any[]>([]);
+  const [patientMessages, setPatientMessages] = useState<Array<{ id: string; content: string; created_at: string; status: string; sender_tag: string }>>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingPhones, setEditingPhones] = useState<Patient | null>(null);
-  const [newPhones, setNewPhones] = useState<Array<{ phone: string; label: string }>>([]);
+
 
   // Enhanced load patients to get current user info
   const loadPatients = useCallback(async () => {
@@ -249,48 +243,7 @@ export default function PatientCatalog() {
     }
   }, [router]);
 
-  // Set primary phone number
-  const setPrimaryPhone = async (phoneId: string, patientId: string) => {
-    try {
-      const supabase = createClient();
-      
-      // First, get all phones for this patient
-      const { data: allPhones, error: fetchError } = await supabase
-        .from('patient_phones')
-        .select('*')
-        .eq('patient_id', patientId);
 
-      if (fetchError) throw fetchError;
-
-      // Update all phones to not be primary (set label to original if it contains "Mobil")
-      for (const phone of allPhones || []) {
-        let newLabel = phone.label;
-        if (phone.label === 'Mobil (Primär)') {
-          newLabel = 'Mobil';
-        }
-        
-        await supabase
-          .from('patient_phones')
-          .update({ label: newLabel })
-          .eq('id', phone.id);
-      }
-
-      // Set the selected phone as primary
-      const selectedPhone = allPhones?.find(p => p.id === phoneId);
-      if (selectedPhone) {
-        await supabase
-          .from('patient_phones')
-          .update({ label: selectedPhone.label === 'Mobil' ? 'Mobil (Primär)' : `${selectedPhone.label} (Primär)` })
-          .eq('id', phoneId);
-      }
-
-      toast.success('Primärt telefonnummer uppdaterat!');
-      loadPatients();
-    } catch (error) {
-      console.error('Error setting primary phone:', error);
-      toast.error('Kunde inte sätta primärt telefonnummer');
-    }
-  };
   const loadPatientMessages = async (patient: Patient) => {
     setLoadingMessages(true);
     try {
@@ -528,8 +481,8 @@ export default function PatientCatalog() {
 
     // Apply sorting
     filtered.sort((a, b) => {
-      let aValue: any = a[sortField];
-      let bValue: any = b[sortField];
+          let aValue: string | number | null = a[sortField];
+    let bValue: string | number | null = b[sortField];
 
       // Handle null values
       if (aValue === null) aValue = '';
@@ -568,7 +521,7 @@ export default function PatientCatalog() {
       setCopiedText(text);
       toast.success(`${label} kopierat!`);
       setTimeout(() => setCopiedText(null), 2000);
-    } catch (error) {
+    } catch (_error) {
       toast.error(`Kunde inte kopiera ${label.toLowerCase()}`);
     }
   };
@@ -791,7 +744,7 @@ export default function PatientCatalog() {
                   <ChevronRight className="w-4 h-4 text-gray-400 opacity-0 group-hover/message:opacity-100 transition-opacity" />
                 </div>
                 <p className="text-base text-gray-800 dark:text-gray-200 line-clamp-2 leading-relaxed">
-                  "{patient.last_message_content}"
+                  &quot;{patient.last_message_content}&quot;
                 </p>
                 <div className="text-xs text-purple-600 dark:text-purple-400 opacity-0 group-hover/message:opacity-100 transition-opacity">
                   Klicka för att se alla meddelanden
@@ -860,7 +813,7 @@ export default function PatientCatalog() {
                 <TooltipContent>
                   <p>
                     {patient.city === 'Auto-generated' && currentUser && patient.created_by !== currentUser.id
-                      ? 'Kan bara redigeras av skaparen' 
+                      ? 'Kan bara redigeras av skaparen'
                       : 'Redigera patient'
                     }
                   </p>
@@ -885,7 +838,7 @@ export default function PatientCatalog() {
                 <TooltipContent>
                   <p>
                     {patient.city === 'Auto-generated' && currentUser && patient.created_by !== currentUser.id
-                      ? 'Kan bara redigeras av skaparen' 
+                      ? 'Kan bara redigeras av skaparen'
                       : 'Hantera telefonnummer'
                     }
                   </p>
@@ -1259,7 +1212,7 @@ export default function PatientCatalog() {
               </label>
               <select
                 value={formData.gender}
-                onChange={(e) => setFormData({ ...formData, gender: e.target.value as any })}
+                onChange={(e) => setFormData({ ...formData, gender: e.target.value as 'male' | 'female' | 'other' | null })}
                 className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
               >
                 <option value="">Välj kön...</option>
@@ -1462,7 +1415,7 @@ export default function PatientCatalog() {
                     </span>
                   </div>
                   <p className="text-gray-900 dark:text-white">
-                    "{viewingPatient.last_message_content}"
+                    &quot;{viewingPatient.last_message_content}&quot;
                   </p>
                 </div>
               </div>

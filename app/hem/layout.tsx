@@ -8,7 +8,6 @@ export default function HemLayout({ children }: Readonly<HemLayoutProps>) {
   return (
     <>
       {children}
-
     </>
   );
 }

@@ -70,7 +70,7 @@ const computeLastActive = (iso: string): string => {
 };
 
 // ✅ FIXED: Use only auth metadata - no database calls
-const constructUserData = (authUser: any) => {
+const constructUserData = (authUser: { email?: string; user_metadata?: any }) => {
   const emailBase = authUser.email?.split('@')[0]?.toUpperCase() || 'USER';
   const metadata = authUser.user_metadata || {};
 
@@ -85,7 +85,7 @@ const constructUserData = (authUser: any) => {
 // COMPACT USER AVATAR COMPONENT
 // ===========================
 
-const CompactUserAvatar = ({ user, index, currentUserSession }: { user: User; index: number; currentUserSession?: any }) => {
+const CompactUserAvatar = ({ user, index, currentUserSession }: { user: User; index: number; currentUserSession?: { id: string; email?: string } }) => {
   const { username, displayName, avatarUrl, lastActive } = user.metadata;
   const displayNameToShow = (displayName && displayName !== username) ? displayName : username;
   
