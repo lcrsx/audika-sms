@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run lint)",
+      "Bash(npm run build:*)",
+      "Bash(dir \"C:\\Users\\laith\\Desktop\\audika-sms\\lib\\supabase\" /A)",
+      "Bash(ls:*)",
+      "Bash(mv:*)",
+      "Bash(psql:*)",
+      "Bash(npx supabase:*)",
+      "Bash(export PGPASSWORD=\"xxrde$p#hSyH!z5JBcR$4shgz7QHPs\")",
+      "Bash(export PGPASSWORD='xxrde$p#hSyH!z5JBcR$4shgz7QHPs')",
+      "Bash(export PGPASSWORD=\"jam-punctual-kept-ecologist-chance\")"
+    ],
+    "deny": []
+  }
+}

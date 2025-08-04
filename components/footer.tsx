@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { Users, Mail, Video, Phone, Heart } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Badge } from './ui/badge';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -70,7 +71,18 @@ const computeLastActive = (iso: string): string => {
 };
 
 // ✅ FIXED: Use only auth metadata - no database calls
-const constructUserData = (authUser: { email?: string; user_metadata?: any }) => {
+interface FooterAuthUser {
+  email?: string;
+  user_metadata?: {
+    display_name?: string;
+    bio?: string;
+    avatar_url?: string;
+    role?: string;
+    [key: string]: unknown;
+  };
+}
+
+const constructUserData = (authUser: FooterAuthUser) => {
   const emailBase = authUser.email?.split('@')[0]?.toUpperCase() || 'USER';
   const metadata = authUser.user_metadata || {};
 
@@ -85,7 +97,21 @@ const constructUserData = (authUser: { email?: string; user_metadata?: any }) =>
 // COMPACT USER AVATAR COMPONENT
 // ===========================
 
-const CompactUserAvatar = ({ user, index, currentUserSession }: { user: User; index: number; currentUserSession?: { id: string; email?: string } }) => {
+interface CompactUserAvatarProps {
+  user: User;
+  index: number;
+  currentUserSession?: {
+    id: string;
+    email?: string;
+    user_metadata?: {
+      display_name?: string;
+      role?: string;
+      [key: string]: unknown;
+    };
+  } | null;
+}
+
+const CompactUserAvatar = ({ user, index, currentUserSession }: CompactUserAvatarProps) => {
   const { username, displayName, avatarUrl, lastActive } = user.metadata;
   const displayNameToShow = (displayName && displayName !== username) ? displayName : username;
   
@@ -95,7 +121,7 @@ const CompactUserAvatar = ({ user, index, currentUserSession }: { user: User; in
   
   // Use session data for current user's avatar, otherwise use presence data
   const avatarName = isCurrentUser ? 
-    (currentUserSession.user_metadata?.display_name || currentUserSession.user_metadata?.full_name || username) :
+    (currentUserSession.user_metadata?.display_name || username) :
     (displayName || username);
 
   return (
@@ -146,8 +172,16 @@ export function Footer() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [currentUserSession, setCurrentUserSession] = useState<any>(null);
-  const channelRef = useRef<any>(null);
+  const [currentUserSession, setCurrentUserSession] = useState<{
+    id: string;
+    email?: string;
+    user_metadata?: {
+      display_name?: string;
+      role?: string;
+      [key: string]: unknown;
+    };
+  } | null>(null);
+  const channelRef = useRef<RealtimeChannel | null>(null);
   const mountedRef = useRef(true);
 
   // ===========================
@@ -194,7 +228,7 @@ export function Footer() {
 
     const supabase = createClient();
 
-    // Create stable presence key
+    // Create a stable presence key
     const getPresenceKey = () => {
       const stored = sessionStorage.getItem('presence_key');
       if (stored) return stored;
@@ -257,7 +291,8 @@ export function Footer() {
 
             setUsers(userList);
             setError(null);
-          } catch (err) {
+          } catch {
+            // Error handled by setting error state
             setError('Failed to load users');
           } finally {
             setLoading(false);
@@ -306,7 +341,8 @@ export function Footer() {
             lastActive: new Date().toISOString(),
           });
 
-        } catch (err) {
+        } catch {
+          // Error handled by setting error and loading state
           if (mountedRef.current) {
             setError('Failed to connect');
             setLoading(false);
@@ -329,7 +365,13 @@ export function Footer() {
 
   // Don't render footer if user is not authenticated
   if (!currentUser && !loading) {
-    return null;
+    return (
+      <footer className="mx-4 mb-4 mt-8 z-30 relative overflow-hidden bg-white/60 dark:bg-slate-800/60 backdrop-blur-xl border border-white/20 dark:border-white/10 rounded-2xl shadow-lg">
+        <div className="px-6 py-4 text-center text-gray-600 dark:text-gray-400">
+          Footer: Not authenticated
+        </div>
+      </footer>
+    );
   }
 
   // ===========================

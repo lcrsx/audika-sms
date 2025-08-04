@@ -8,8 +8,10 @@
  * - INFOBIP_SENDER_ID: The default sender ID to use
  */
 import { createClient } from '@/lib/supabase/server';
+import { logger } from '@/lib/utils/logger';
+import { handleSMSError, handleDatabaseError } from '@/lib/utils/error-handler';
 
-const mapInfobipStatusToInternal = (status: string): 'pending' | 'sent' | 'delivered' | 'failed' => {
+export const mapInfobipStatusToInternal = (status: string): 'pending' | 'sent' | 'delivered' | 'failed' => {
   const normalized = status.toLowerCase();
 
   if (normalized.includes('pending')) return 'pending';
@@ -18,6 +20,15 @@ const mapInfobipStatusToInternal = (status: string): 'pending' | 'sent' | 'deliv
   if (normalized.includes('fail')) return 'failed';
 
   return 'sent'; // default fallback
+};
+
+// Define the return type for SMS operations
+type SMSResult = {
+  success: boolean;
+  messageId?: string;
+  error?: string;
+  warning?: string;
+  errorCode?: string;
 };
 
 // Define the shape of the input params so TypeScript can help catch your dumb mistakes
@@ -46,11 +57,7 @@ type InfobipV3Response = {
 };
 
 // Fixed SMS Service with correct database fields
-export async function sendSMS(params: SendSMSParams): Promise<{
-  success: boolean;
-  messageId?: string;
-  error?: string;
-}> {
+export async function sendSMS(params: SendSMSParams): Promise<SMSResult> {
   const {
     content,
     recipientPhone,
@@ -91,15 +98,12 @@ export async function sendSMS(params: SendSMSParams): Promise<{
     // Handle HTTP failure from Infobip
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('Infobip API Error:', {
-        status: response.status,
-        statusText: response.statusText,
-        body: errorText
-      });
-
+      const secureError = handleSMSError(new Error(errorText), response.status);
+      
       return {
         success: false,
-        error: `SMS-tjänsten är inte tillgänglig (${response.status})`
+        error: secureError.userMessage,
+        errorCode: secureError.errorCode
       };
     }
 
@@ -143,17 +147,24 @@ export async function sendSMS(params: SendSMSParams): Promise<{
         .single();
 
       if (insertError) {
-        console.error('❌ DB insert error:', insertError);
-        console.error('❌ Failed data:', messageData);
+        handleDatabaseError(insertError);
+        logger.error('Database insert failed after SMS sent', insertError as Error, {
+          metadata: { messageId: message.messageId }
+        });
         
-        // Still return success since SMS was sent, just log the DB error
-        console.log('⚠️ SMS sent successfully but database save failed');
+        // Return partial success - SMS sent but not saved
+        return {
+          success: true,
+          messageId: message.messageId,
+          warning: 'SMS skickat men kunde inte sparas i databasen'
+        };
       } else {
-        console.log('✅ Message saved to database:', insertedMessage.id);
+        logger.info('Message saved to database', { metadata: { messageId: insertedMessage.id } });
       }
 
     } catch (dbError) {
-      console.error('❌ Database exception:', dbError);
+      handleDatabaseError(dbError);
+      logger.error('Database exception after SMS sent', dbError as Error);
       // Continue - SMS was sent successfully
     }
 
@@ -191,13 +202,12 @@ export async function sendSMS(params: SendSMSParams): Promise<{
       messageId: message.messageId
     };
 
-  } catch (error: any) {
-    console.error('SMS Service Error:', error);
+  } catch (error: unknown) {
+    const secureError = handleSMSError(error);
     return {
       success: false,
-      error: error?.message?.includes('fetch')
-          ? 'Nätverksfel - kunde inte ansluta till SMS-tjänsten'
-          : 'Ett oväntat fel inträffade vid SMS-sändning'
+      error: secureError.userMessage,
+      errorCode: secureError.errorCode
     };
   }
 }
@@ -308,11 +318,11 @@ export async function sendSMSSimulated(params: SendSMSParams): Promise<{
       messageId: fakeMessageId
     };
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[SIMULATED] SMS error:', error);
     return {
       success: false,
-      error: error?.message || 'Simuleringsfel'
+      error: (error as Error)?.message || 'Simuleringsfel'
     };
   }
 }

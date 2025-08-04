@@ -22,7 +22,15 @@ interface ChatEntryItemProps {
   isOwnEntry: boolean
   showHeader: boolean
   isLastMessage?: boolean
-  currentUserSession?: { id: string; email?: string; user_metadata?: any }
+  currentUserSession?: { 
+    id: string; 
+    email?: string; 
+    user_metadata?: {
+      display_name?: string;
+      role?: string;
+      [key: string]: unknown;
+    };
+  } | null
 }
 
 export const ChatEntryItem = ({ 
@@ -38,7 +46,7 @@ export const ChatEntryItem = ({
   
   // Use session data for current user's avatar, otherwise use chat entry data
   const avatarName = isOwnEntry && currentUserSession ? 
-    (currentUserSession.user_metadata?.display_name || currentUserSession.user_metadata?.full_name || chatEntry.user.name) :
+    (currentUserSession.user_metadata?.display_name || chatEntry.user.name) :
     chatEntry.user.name
   
   const renderStatusIcon = () => {

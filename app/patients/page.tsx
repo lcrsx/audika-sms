@@ -134,10 +134,26 @@ export default function PatientCatalog() {
   // Dialog states
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
   const [viewingPatient, setViewingPatient] = useState<Patient | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editFormData, setEditFormData] = useState<{
+    cnumber: string;
+    city: string;
+    internal_notes: string;
+    gender: string;
+    date_of_birth: string;
+    phones: Array<{ id?: string; phone: string; label: string; customLabel?: string; isPrimary: boolean }>;
+  }>({
+    cnumber: '',
+    city: '',
+    internal_notes: '',
+    gender: '',
+    date_of_birth: '',
+    phones: []
+  });
 
   const [deletingPatient, setDeletingPatient] = useState<Patient | null>(null);
   const [viewingMessages, setViewingMessages] = useState<Patient | null>(null);
-  const [patientMessages, setPatientMessages] = useState<Array<{ id: string; content: string; created_at: string; status: string; sender_tag: string }>>([]);
+  const [patientMessages, setPatientMessages] = useState<Array<{ id: string; content: string; created_at: string; status: string; sender_display_name: string; recipient_phone: string; infobip_message_id?: string }>>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingPhones, setEditingPhones] = useState<Patient | null>(null);
@@ -273,15 +289,21 @@ export default function PatientCatalog() {
   // Add phone number with better error handling
   const addPhoneNumber = async (patientId: string, phone: string, label: string) => {
     try {
+      // Basic phone number validation
+      const cleanPhone = phone.trim().replace(/\s+/g, '');
+      if (!/^[\+]?[0-9\s\-\(\)]{7,15}$/.test(cleanPhone)) {
+        throw new Error('Ogiltigt telefonnummer format');
+      }
+      
       const supabase = createClient();
       
-      console.log('📱 Adding phone number:', { patientId, phone, label });
+      console.log('📱 Adding phone number:', { patientId, phone: cleanPhone, label });
       
       const { data: newPhone, error } = await supabase
         .from('patient_phones')
         .insert({
           patient_id: patientId,
-          phone: phone.trim(),
+          phone: cleanPhone,
           label: label
         })
         .select()
@@ -381,15 +403,35 @@ export default function PatientCatalog() {
     }
   };
 
-  // Update patient
-  const updatePatient = async (updatedData: Partial<Patient>) => {
+  // Enhanced update patient with CNummer and phone management
+  const updatePatient = async (formData: typeof editFormData) => {
     if (!editingPatient) return;
+    
+    // Validate required fields
+    if (!formData.cnumber.trim()) {
+      toast.error('CNummer är obligatoriskt');
+      return;
+    }
+    
+    // Validate date of birth if provided
+    if (formData.date_of_birth) {
+      const birthDate = new Date(formData.date_of_birth);
+      const today = new Date();
+      if (birthDate > today) {
+        toast.error('Födelsedatum kan inte vara i framtiden');
+        return;
+      }
+      if (birthDate < new Date('1900-01-01')) {
+        toast.error('Födelsedatum verkar vara ogiltigt');
+        return;
+      }
+    }
     
     setIsSubmitting(true);
     try {
       const supabase = createClient();
       
-      console.log('🔄 Updating patient:', editingPatient.cnumber, updatedData);
+      console.log('🔄 Updating patient:', editingPatient.cnumber, formData);
       
       // Get current user to check permissions
       const { data: { user }, error: userError } = await supabase.auth.getUser();
@@ -400,14 +442,15 @@ export default function PatientCatalog() {
       console.log('👤 Current user:', user.id);
       console.log('👤 Patient created by:', editingPatient.created_by);
       
-      // Try to update the patient
+      // Update patient basic info
       const { data: updatedPatient, error } = await supabase
         .from('patients')
         .update({
-          city: updatedData.city || null,
-          internal_notes: updatedData.internal_notes || null,
-          gender: updatedData.gender || null,
-          date_of_birth: updatedData.date_of_birth || null,
+          cnumber: formData.cnumber,
+          city: formData.city || null,
+          internal_notes: formData.internal_notes || null,
+          gender: formData.gender || null,
+          date_of_birth: formData.date_of_birth || null,
           updated_at: new Date().toISOString()
         })
         .eq('id', editingPatient.id)
@@ -422,6 +465,8 @@ export default function PatientCatalog() {
           throw new Error('Du har inte behörighet att redigera denna patient. Kontakta en administratör.');
         } else if (error.code === '42501') {
           throw new Error('Säkerhetspolicy förhindrar redigering av auto-skapade patienter. Kontakta IT-support.');
+        } else if (error.code === '23505') {
+          throw new Error('Detta CNummer finns redan registrerat.');
         } else if (error.message.includes('RLS')) {
           throw new Error('Databasåtkomst nekad. Kontrollera dina behörigheter.');
         } else {
@@ -429,9 +474,50 @@ export default function PatientCatalog() {
         }
       }
 
+      // Handle phone number updates
+      const currentPhones = editingPatient.patient_phones;
+      const newPhones = formData.phones;
+
+      // Delete phones that are no longer in the list
+      for (const currentPhone of currentPhones) {
+        const stillExists = newPhones.find(np => np.id === currentPhone.id);
+        if (!stillExists) {
+          await supabase
+            .from('patient_phones')
+            .delete()
+            .eq('id', currentPhone.id);
+        }
+      }
+
+      // Add or update phones
+      for (const newPhone of newPhones) {
+        if (!newPhone.phone.trim()) continue; // Skip empty phone numbers
+        
+        if (newPhone.id) {
+          // Update existing phone
+          await supabase
+            .from('patient_phones')
+            .update({
+              phone: newPhone.phone.trim(),
+              label: newPhone.customLabel || newPhone.label
+            })
+            .eq('id', newPhone.id);
+        } else {
+          // Add new phone
+          await supabase
+            .from('patient_phones')
+            .insert({
+              patient_id: editingPatient.id,
+              phone: newPhone.phone.trim(),
+              label: newPhone.customLabel || newPhone.label
+            });
+        }
+      }
+
       console.log('✅ Patient updated successfully:', updatedPatient);
       toast.success('Patient uppdaterad framgångsrikt!');
       setEditingPatient(null);
+      setIsEditing(false);
       loadPatients();
       
     } catch (error) {
@@ -442,6 +528,70 @@ export default function PatientCatalog() {
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // Start editing patient
+  const startEditing = (patient: Patient) => {
+    setEditingPatient(patient);
+    setIsEditing(true);
+    setEditFormData({
+      cnumber: patient.cnumber,
+      city: patient.city || '',
+      internal_notes: patient.internal_notes || '',
+      gender: patient.gender || '',
+      date_of_birth: patient.date_of_birth || '',
+      phones: patient.patient_phones.map((phone, index) => ({
+        id: phone.id,
+        phone: phone.phone,
+        label: phone.label,
+        isPrimary: index === 0 // First phone is primary
+      }))
+    });
+  };
+
+  // Cancel editing
+  const cancelEditing = () => {
+    setEditingPatient(null);
+    setIsEditing(false);
+    setError(null); // Clear any error messages
+    setEditFormData({
+      cnumber: '',
+      city: '',
+      internal_notes: '',
+      gender: '',
+      date_of_birth: '',
+      phones: []
+    });
+  };
+
+  // Add new phone to edit form
+  const addPhoneToForm = () => {
+    setEditFormData(prev => ({
+      ...prev,
+      phones: [...prev.phones, { phone: '', label: 'Mobil', isPrimary: false }]
+    }));
+  };
+
+  // Remove phone from edit form
+  const removePhoneFromForm = (index: number) => {
+    setEditFormData(prev => ({
+      ...prev,
+      phones: prev.phones.filter((_, i) => i !== index)
+    }));
+  };
+
+  // Update phone in edit form
+  const updatePhoneInForm = (index: number, field: 'phone' | 'label' | 'customLabel' | 'isPrimary', value: string | boolean) => {
+    setEditFormData(prev => ({
+      ...prev,
+      phones: prev.phones.map((phone, i) => 
+        i === index 
+          ? { ...phone, [field]: value }
+          : field === 'isPrimary' && value === true
+            ? { ...phone, isPrimary: false } // Unset other phones as primary
+            : phone
+      )
+    }));
   };
 
   // Enhanced filtering and sorting
@@ -481,12 +631,12 @@ export default function PatientCatalog() {
 
     // Apply sorting
     filtered.sort((a, b) => {
-          let aValue: string | number | null = a[sortField];
-    let bValue: string | number | null = b[sortField];
+          let aValue: string | number | null | undefined = a[sortField];
+    let bValue: string | number | null | undefined = b[sortField];
 
-      // Handle null values
-      if (aValue === null) aValue = '';
-      if (bValue === null) bValue = '';
+      // Handle null/undefined values
+      if (aValue === null || aValue === undefined) aValue = '';
+      if (bValue === null || bValue === undefined) bValue = '';
 
       // Handle dates
       if (sortField === 'created_at' || sortField === 'last_contact_at') {
@@ -514,14 +664,26 @@ export default function PatientCatalog() {
     loadPatients();
   }, [loadPatients]);
 
-  // Copy to clipboard with enhanced feedback
+  // Copy to clipboard with enhanced feedback - no flickering
   const copyToClipboard = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      if (!navigator.clipboard) {
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
       setCopiedText(text);
       toast.success(`${label} kopierat!`);
-      setTimeout(() => setCopiedText(null), 2000);
-    } catch (_error) {
+      // Use a longer timeout to prevent flickering
+      setTimeout(() => setCopiedText(null), 3000);
+    } catch (error) {
+      console.error('Copy failed:', error);
       toast.error(`Kunde inte kopiera ${label.toLowerCase()}`);
     }
   };
@@ -594,16 +756,16 @@ export default function PatientCatalog() {
 
   // Enhanced Patient Row Component
   const PatientRow = ({ patient }: { patient: Patient }) => {
-    const primaryPhone = patient.patient_phones.find(p => p.label === 'Mobil') || patient.patient_phones[0];
+    // const primaryPhone = patient.patient_phones.find(p => p.label === 'Mobil') || patient.patient_phones[0];
     
     return (
       <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -10 }}
-        className="group bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm border border-gray-200/50 dark:border-gray-700/50 rounded-xl p-4 hover:shadow-lg hover:shadow-purple-500/10 dark:hover:shadow-purple-400/10 transition-all duration-300 hover:scale-[1.01]"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="group bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm border border-gray-200/50 dark:border-gray-700/50 rounded-xl p-4 hover:shadow-lg hover:shadow-purple-500/10 dark:hover:shadow-purple-400/10 transition-all duration-200"
       >
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
           {/* Left section - Patient info */}
           <div className="flex items-center gap-3 flex-1 min-w-0">
             <Avatar className="h-10 w-10 bg-gradient-to-br from-purple-500 to-pink-600 shadow-lg group-hover:shadow-xl transition-all duration-300">
@@ -615,33 +777,24 @@ export default function PatientCatalog() {
             
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-1">
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div
-                        className="font-bold text-gray-900 dark:text-white hover:text-purple-600 dark:hover:text-purple-400 transition-colors flex items-center gap-1 group/copy cursor-pointer"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          copyToClipboard(patient.cnumber, 'CNummer');
-                        }}
-                        style={{ minHeight: '24px', alignItems: 'center' }}
-                      >
-                        <span className="select-none leading-none">{patient.cnumber}</span>
-                        <div className="w-3 h-3 flex items-center justify-center flex-shrink-0">
-                          {copiedText === patient.cnumber ? (
-                            <CheckCircle className="w-3 h-3 text-green-500" />
-                          ) : (
-                            <Copy className="w-3 h-3 text-gray-400 opacity-0 group-hover/copy:opacity-100 transition-opacity" />
-                          )}
-                        </div>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>Klicka för att kopiera CNummer</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                <div
+                  className="font-bold text-gray-900 dark:text-white hover:text-purple-600 dark:hover:text-purple-400 transition-colors flex items-center gap-1 group/copy cursor-pointer"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    copyToClipboard(patient.cnumber, 'CNummer');
+                  }}
+                  style={{ minHeight: '24px', alignItems: 'center' }}
+                >
+                  <span className="select-none leading-none">{patient.cnumber}</span>
+                  <div className="w-3 h-3 flex items-center justify-center flex-shrink-0">
+                    {copiedText === patient.cnumber ? (
+                      <CheckCircle className="w-3 h-3 text-green-500" />
+                    ) : (
+                      <Copy className="w-3 h-3 text-gray-400 opacity-0 group-hover/copy:opacity-100 transition-opacity" />
+                    )}
+                  </div>
+                </div>
                 
                 {getStatusBadge(patient)}
                 
@@ -660,65 +813,54 @@ export default function PatientCatalog() {
                 )}
               </div>
               
-              <div className="flex items-center gap-4 text-xs text-gray-600 dark:text-gray-400">
+              <div className="space-y-2">
                 {patient.city && patient.city !== 'Auto-generated' && (
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
                     <MapPin className="w-3 h-3" />
                     <span>{patient.city}</span>
                   </div>
                 )}
                 
-                {primaryPhone && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <div
-                          className="flex items-center gap-1 hover:text-purple-600 dark:hover:text-purple-400 transition-colors group/phone cursor-pointer"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            copyToClipboard(primaryPhone.phone, 'Telefonnummer');
-                          }}
-                          style={{ minHeight: '20px', alignItems: 'center' }}
-                        >
-                          <Phone className="w-3 h-3 flex-shrink-0" />
-                          <span className="font-mono select-none leading-none">{primaryPhone.phone}</span>
-                          <div className="w-3 h-3 flex items-center justify-center flex-shrink-0">
-                            {copiedText === primaryPhone.phone ? (
-                              <CheckCircle className="w-3 h-3 text-green-500" />
-                            ) : (
-                              <Copy className="w-3 h-3 opacity-0 group-hover/phone:opacity-100 transition-opacity" />
-                            )}
-                          </div>
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Klicka för att kopiera telefonnummer</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
+                {/* Show up to 2 phone numbers - vertical layout */}
+                <div className="space-y-1">
+                  {patient.patient_phones.slice(0, 2).map((phone) => (
+                    <div
+                      key={phone.id}
+                      className="flex items-center gap-2 hover:text-purple-600 dark:hover:text-purple-400 transition-colors group/phone cursor-pointer"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        copyToClipboard(phone.phone, 'Telefonnummer');
+                      }}
+                    >
+                      <Phone className="w-3 h-3 flex-shrink-0" />
+                      <span className="font-mono select-none leading-none text-xs">{phone.phone}</span>
+                      <Badge variant="outline" className="text-xs px-1 py-0 h-4 text-gray-500 dark:text-gray-400 border-gray-300 dark:border-gray-600">
+                        {phone.label}
+                      </Badge>
+                      <div className="w-3 h-3 flex items-center justify-center flex-shrink-0">
+                        {copiedText === phone.phone ? (
+                          <CheckCircle className="w-3 h-3 text-green-500 transition-all duration-200" />
+                        ) : (
+                          <Copy className="w-3 h-3 opacity-0 group-hover/phone:opacity-100 transition-all duration-200" />
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                  
+                  {/* Show +X if more than 2 phones */}
+                  {patient.patient_phones.length > 2 && (
+                    <button
+                      className="flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                      onClick={() => setEditingPhones(patient)}
+                    >
+                      <Phone className="w-3 h-3" />
+                      <span className="text-xs">+{patient.patient_phones.length - 2}</span>
+                    </button>
+                  )}
+                </div>
                 
-                {patient.patient_phones.length > 1 && (
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <button
-                          className="flex items-center gap-1 text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
-                          onClick={() => setEditingPhones(patient)}
-                        >
-                          <Phone className="w-3 h-3" />
-                          <span className="text-xs">+{patient.patient_phones.length - 1}</span>
-                        </button>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Se alla telefonnummer</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-                
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 text-xs text-gray-600 dark:text-gray-400">
                   <MessageSquare className="w-3 h-3" />
                   <span>{patient.total_messages || 0}</span>
                 </div>
@@ -727,10 +869,10 @@ export default function PatientCatalog() {
           </div>
 
           {/* Middle section - Last message - Enhanced */}
-          <div className="flex-1 min-w-0 px-4">
+          <div className="flex-1 min-w-0 lg:px-4">
             {patient.last_message_content ? (
               <div 
-                className="space-y-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 p-3 rounded-lg transition-all duration-200 group/message"
+                className="space-y-3 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 p-4 rounded-lg transition-all duration-200 group/message"
                 onClick={() => {
                   setViewingMessages(patient);
                   loadPatientMessages(patient);
@@ -743,7 +885,7 @@ export default function PatientCatalog() {
                   </span>
                   <ChevronRight className="w-4 h-4 text-gray-400 opacity-0 group-hover/message:opacity-100 transition-opacity" />
                 </div>
-                <p className="text-base text-gray-800 dark:text-gray-200 line-clamp-2 leading-relaxed">
+                <p className="text-base text-gray-800 dark:text-gray-200 line-clamp-3 leading-relaxed">
                   &quot;{patient.last_message_content}&quot;
                 </p>
                 <div className="text-xs text-purple-600 dark:text-purple-400 opacity-0 group-hover/message:opacity-100 transition-opacity">
@@ -751,20 +893,20 @@ export default function PatientCatalog() {
                 </div>
               </div>
             ) : (
-              <div className="text-sm text-gray-400 dark:text-gray-500 italic p-3">
+              <div className="text-sm text-gray-400 dark:text-gray-500 italic p-4">
                 Inga meddelanden ännu
               </div>
             )}
           </div>
 
           {/* Right section - Actions */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     size="sm"
-                    className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white h-8 px-3 text-xs shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"
+                    className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white h-8 px-3 text-xs shadow-lg hover:shadow-xl transition-all duration-200"
                     onClick={() => sendSMSToPatient(patient)}
                   >
                     <Send className="w-3 h-3 mr-1" />
@@ -783,7 +925,7 @@ export default function PatientCatalog() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-8 px-3 text-xs border-gray-300 dark:border-gray-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-200 hover:scale-105"
+                    className="h-8 px-3 text-xs border-gray-300 dark:border-gray-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-200"
                     onClick={() => setViewingPatient(patient)}
                   >
                     <Eye className="w-3 h-3 mr-1" />
@@ -796,30 +938,7 @@ export default function PatientCatalog() {
               </Tooltip>
             </TooltipProvider>
 
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 px-3 text-xs border-gray-300 dark:border-gray-600 hover:bg-green-50 dark:hover:bg-green-900/30 transition-all duration-200 hover:scale-105"
-                    onClick={() => setEditingPatient(patient)}
-                    disabled={patient.city === 'Auto-generated' && currentUser && patient.created_by !== currentUser.id}
-                  >
-                    <Edit className="w-3 h-3 mr-1" />
-                    Ändra
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>
-                    {patient.city === 'Auto-generated' && currentUser && patient.created_by !== currentUser.id
-                      ? 'Kan bara redigeras av skaparen'
-                      : 'Redigera patient'
-                    }
-                  </p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+
 
             <TooltipProvider>
               <Tooltip>
@@ -827,12 +946,12 @@ export default function PatientCatalog() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-8 px-3 text-xs border-blue-300 dark:border-blue-600 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-200 hover:scale-105"
+                    className="h-8 px-3 text-xs border-blue-300 dark:border-blue-600 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-all duration-200"
                     onClick={() => setEditingPhones(patient)}
-                    disabled={patient.city === 'Auto-generated' && currentUser && patient.created_by !== currentUser.id}
+                    disabled={!!(patient.city === 'Auto-generated' && currentUser && patient.created_by !== currentUser.id)}
                   >
                     <Phone className="w-3 h-3 mr-1" />
-                    Telefon
+                    Hantera
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -852,7 +971,7 @@ export default function PatientCatalog() {
                   <Button
                     variant="outline"
                     size="sm"
-                    className={`h-8 px-3 text-xs transition-all duration-200 hover:scale-105 ${
+                    className={`h-8 px-3 text-xs transition-all duration-200 ${
                       patient.is_active 
                         ? 'border-red-300 dark:border-red-600 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30' 
                         : 'border-green-300 dark:border-green-600 text-green-600 dark:text-green-400 hover:bg-green-50 dark:hover:bg-green-900/30'
@@ -1044,10 +1163,20 @@ export default function PatientCatalog() {
             </Button>
             <Button
               onClick={savePhones}
+              disabled={isSubmitting}
               className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700"
             >
-              <Save className="w-4 h-4 mr-2" />
-              Spara ändringar
+              {isSubmitting ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                  Sparar...
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4 mr-2" />
+                  Spara ändringar
+                </>
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1167,300 +1296,423 @@ export default function PatientCatalog() {
       </Dialog>
     );
   };
-  const EditPatientDialog = () => {
-    const [formData, setFormData] = useState({
-      city: editingPatient?.city || '',
-      internal_notes: editingPatient?.internal_notes || '',
-      gender: editingPatient?.gender || '',
-      date_of_birth: editingPatient?.date_of_birth || ''
-    });
 
-    const handleSubmit = (e: React.FormEvent) => {
-      e.preventDefault();
-      updatePatient(formData);
-    };
 
-    return (
-      <Dialog open={!!editingPatient} onOpenChange={() => setEditingPatient(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Edit className="w-5 h-5 text-blue-500" />
-              Redigera Patient
-            </DialogTitle>
-            <DialogDescription>
-              Uppdatera information för {editingPatient?.cnumber}
-            </DialogDescription>
-          </DialogHeader>
-          
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Stad
-              </label>
-              <Input
-                value={formData.city}
-                onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                placeholder="Ange stad..."
-                className="mt-1"
-              />
-            </div>
-            
-            <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Kön
-              </label>
-              <select
-                value={formData.gender}
-                onChange={(e) => setFormData({ ...formData, gender: e.target.value as 'male' | 'female' | 'other' | null })}
-                className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
-              >
-                <option value="">Välj kön...</option>
-                <option value="male">Man</option>
-                <option value="female">Kvinna</option>
-                <option value="other">Annat</option>
-              </select>
-            </div>
-            
-            <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Födelsedatum
-              </label>
-              <Input
-                type="date"
-                value={formData.date_of_birth}
-                onChange={(e) => setFormData({ ...formData, date_of_birth: e.target.value })}
-                className="mt-1"
-              />
-            </div>
-            
-            <div>
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                Interna anteckningar
-              </label>
-              <Textarea
-                value={formData.internal_notes}
-                onChange={(e) => setFormData({ ...formData, internal_notes: e.target.value })}
-                placeholder="Lägg till anteckningar..."
-                rows={3}
-                className="mt-1"
-              />
-            </div>
-            
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setEditingPatient(null)}
-                disabled={isSubmitting}
-              >
-                Avbryt
-              </Button>
-              <Button
-                type="submit"
-                disabled={isSubmitting}
-                className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700"
-              >
-                {isSubmitting ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
-                    Sparar...
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-4 h-4 mr-2" />
-                    Spara ändringar
-                  </>
-                )}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-    );
-  };
-
-  // View Patient Dialog
+  // Enhanced View Patient Dialog with In-Place Editing
   const ViewPatientDialog = () => {
     if (!viewingPatient) return null;
 
+    const patient = isEditing ? editingPatient : viewingPatient;
+    if (!patient) return null;
+
     return (
-      <Dialog open={!!viewingPatient} onOpenChange={() => setViewingPatient(null)}>
-        <DialogContent className="sm:max-w-2xl">
+      <Dialog open={!!viewingPatient} onOpenChange={() => {
+        setViewingPatient(null);
+        if (isEditing) {
+          cancelEditing();
+        }
+      }}>
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Eye className="w-5 h-5 text-blue-500" />
-              Patientdetaljer - {viewingPatient.cnumber}
+              {isEditing ? 'Redigera Patient' : 'Patientdetaljer'} - {patient.cnumber}
             </DialogTitle>
+            <DialogDescription>
+              {isEditing ? 'Klicka på fälten för att redigera' : 'Visa patientdetaljer'}
+            </DialogDescription>
           </DialogHeader>
           
           <div className="space-y-6">
-            {/* Basic Info */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">CNummer</label>
-                <p className="text-lg font-semibold text-gray-900 dark:text-white">{viewingPatient.cnumber}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Status</label>
-                <div className="mt-1">
-                  {getStatusBadge(viewingPatient)}
-                </div>
-              </div>
-              {viewingPatient.city && (
+            {/* Basic Info Section */}
+            <div className="bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm rounded-xl p-6 border border-gray-200/50 dark:border-gray-700/50">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                <Users className="w-5 h-5 text-blue-500" />
+                Grundinformation
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* CNummer */}
                 <div>
-                  <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Stad</label>
-                  <p className="text-gray-900 dark:text-white">{viewingPatient.city}</p>
+                  <label className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-2 block">
+                    CNummer <span className="text-red-500">*</span>
+                  </label>
+                  {isEditing ? (
+                    <Input
+                      value={editFormData.cnumber}
+                      onChange={(e) => setEditFormData(prev => ({ ...prev, cnumber: e.target.value }))}
+                      className="font-mono text-lg font-semibold"
+                      placeholder="Ange CNummer..."
+                    />
+                  ) : (
+                    <p className="text-lg font-semibold text-gray-900 dark:text-white font-mono">
+                      {patient.cnumber}
+                    </p>
+                  )}
                 </div>
-              )}
-              {viewingPatient.gender && (
+
+                {/* Status */}
                 <div>
-                  <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Kön</label>
+                  <label className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-2 block">
+                    Status
+                  </label>
+                  <div className="mt-1">
+                    {getStatusBadge(patient)}
+                  </div>
+                </div>
+
+                {/* City */}
+                <div>
+                  <label className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-2 block">
+                    Stad
+                  </label>
+                  {isEditing ? (
+                    <Input
+                      value={editFormData.city}
+                      onChange={(e) => setEditFormData(prev => ({ ...prev, city: e.target.value }))}
+                      placeholder="Ange stad..."
+                    />
+                  ) : (
+                    <p className="text-gray-900 dark:text-white">
+                      {patient.city || 'Ej angivet'}
+                    </p>
+                  )}
+                </div>
+
+                {/* Gender */}
+                <div>
+                  <label className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-2 block">
+                    Kön
+                  </label>
+                  {isEditing ? (
+                    <select
+                      value={editFormData.gender}
+                      onChange={(e) => setEditFormData(prev => ({ ...prev, gender: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+                    >
+                      <option value="">Välj kön...</option>
+                      <option value="male">Man</option>
+                      <option value="female">Kvinna</option>
+                      <option value="other">Annat</option>
+                    </select>
+                  ) : (
+                    <p className="text-gray-900 dark:text-white">
+                      {patient.gender === 'male' ? 'Man' : 
+                       patient.gender === 'female' ? 'Kvinna' : 
+                       patient.gender === 'other' ? 'Annat' : 'Ej angivet'}
+                    </p>
+                  )}
+                </div>
+
+                {/* Date of Birth */}
+                <div>
+                  <label className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-2 block">
+                    Födelsedatum
+                  </label>
+                  {isEditing ? (
+                    <Input
+                      type="date"
+                      value={editFormData.date_of_birth}
+                      onChange={(e) => setEditFormData(prev => ({ ...prev, date_of_birth: e.target.value }))}
+                    />
+                  ) : (
+                    <p className="text-gray-900 dark:text-white">
+                      {patient.date_of_birth 
+                        ? new Date(patient.date_of_birth).toLocaleDateString('sv-SE')
+                        : 'Ej angivet'
+                      }
+                    </p>
+                  )}
+                </div>
+
+                {/* Created */}
+                <div>
+                  <label className="text-sm font-medium text-gray-600 dark:text-gray-400 mb-2 block">
+                    Skapad
+                  </label>
                   <p className="text-gray-900 dark:text-white">
-                    {viewingPatient.gender === 'male' ? 'Man' : 
-                     viewingPatient.gender === 'female' ? 'Kvinna' : 'Annat'}
+                    {formatRelativeTime(patient.created_at)}
                   </p>
                 </div>
-              )}
-              {viewingPatient.date_of_birth && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Födelsedatum</label>
-                  <p className="text-gray-900 dark:text-white">
-                    {new Date(viewingPatient.date_of_birth).toLocaleDateString('sv-SE')}
-                  </p>
-                </div>
-              )}
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Skapad</label>
-                <p className="text-gray-900 dark:text-white">
-                  {formatRelativeTime(viewingPatient.created_at)}
-                </p>
               </div>
             </div>
 
-            {/* Phone Numbers */}
-            {viewingPatient.patient_phones.length > 0 && (
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
+            {/* Phone Numbers Section */}
+            <div className="bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm rounded-xl p-6 border border-gray-200/50 dark:border-gray-700/50">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
+                  <Phone className="w-5 h-5 text-green-500" />
                   Telefonnummer
-                </label>
-                <div className="space-y-2">
-                  {viewingPatient.patient_phones.map((phone) => (
-                    <div key={phone.id} className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 p-3 rounded-lg">
-                      <div className="flex items-center gap-2">
-                        <Phone className="w-4 h-4 text-gray-400" />
-                        <span className="font-mono text-gray-900 dark:text-white">{phone.phone}</span>
-                        <Badge variant="outline" className="text-xs">{phone.label}</Badge>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => copyToClipboard(phone.phone, 'Telefonnummer')}
-                        className="h-8 w-8 p-0"
-                      >
-                        {copiedText === phone.phone ? (
-                          <CheckCircle className="w-4 h-4 text-green-500" />
-                        ) : (
-                          <Copy className="w-4 h-4 text-gray-400" />
-                        )}
-                      </Button>
-                    </div>
-                  ))}
-                </div>
+                </h3>
+                {isEditing && (
+                  <Button
+                    onClick={addPhoneToForm}
+                    variant="outline"
+                    size="sm"
+                    className="bg-green-100 hover:bg-green-200 dark:bg-green-900/30 dark:hover:bg-green-800/30 border-green-300 dark:border-green-600 text-green-700 dark:text-green-400"
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Lägg till
+                  </Button>
+                )}
               </div>
-            )}
+              
+                             <div className="space-y-3">
+                 {isEditing ? (
+                   editFormData.phones.length > 0 ? (
+                     editFormData.phones.map((phone, index) => (
+                       <div key={index} className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                         <div className="flex items-center gap-3 mb-3">
+                           <Phone className="w-4 h-4 text-green-500" />
+                           <span className="text-sm font-medium text-gray-600 dark:text-gray-400">Telefon {index + 1}</span>
+                           <div className="flex items-center gap-2 ml-auto">
+                             <input
+                               type="radio"
+                               name="primaryPhone"
+                               checked={phone.isPrimary}
+                               onChange={() => updatePhoneInForm(index, 'isPrimary', true)}
+                               className="text-green-500 focus:ring-green-500"
+                             />
+                             <span className="text-sm text-gray-600 dark:text-gray-400">Primär</span>
+                           </div>
+                         </div>
+                         
+                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                           <div>
+                             <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Nummer</label>
+                             <Input
+                               value={phone.phone}
+                               onChange={(e) => updatePhoneInForm(index, 'phone', e.target.value)}
+                               placeholder="0701234567"
+                               className="font-mono text-sm"
+                             />
+                           </div>
+                           <div>
+                             <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Typ</label>
+                             <div className="flex gap-1">
+                               <select
+                                 value={phone.label}
+                                 onChange={(e) => updatePhoneInForm(index, 'label', e.target.value)}
+                                 className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white text-sm"
+                               >
+                                 <option value="Mobil">Mobil</option>
+                                 <option value="Hem">Hem</option>
+                                 <option value="Arbete">Arbete</option>
+                                 <option value="Son">Son</option>
+                                 <option value="Dotter">Dotter</option>
+                                 <option value="Make/Maka">Make/Maka</option>
+                                 <option value="Partner">Partner</option>
+                                 <option value="Mor">Mor</option>
+                                 <option value="Far">Far</option>
+                                 <option value="Vårdnadshavare">Vårdnadshavare</option>
+                                 <option value="Kontaktperson">Kontaktperson</option>
+                                 <option value="Annat">Annat</option>
+                                 <option value="custom">Egen...</option>
+                               </select>
+                               {phone.label === 'custom' && (
+                                 <Input
+                                   placeholder="Egen typ"
+                                   value={phone.customLabel || ''}
+                                   onChange={(e) => updatePhoneInForm(index, 'customLabel', e.target.value)}
+                                   className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white text-sm"
+                                 />
+                               )}
+                             </div>
+                           </div>
+                         </div>
+                         
+                         <div className="flex justify-end mt-3">
+                           <Button
+                             variant="ghost"
+                             size="sm"
+                             onClick={() => removePhoneFromForm(index)}
+                             className="text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30"
+                           >
+                             <Trash2 className="w-4 h-4 mr-1" />
+                             Ta bort
+                           </Button>
+                         </div>
+                       </div>
+                     ))
+                   ) : (
+                     <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                       <Phone className="w-8 h-8 mx-auto mb-2 text-gray-300 dark:text-gray-600" />
+                       <p className="text-sm">Inga telefonnummer</p>
+                       <p className="text-xs mt-1">Klicka &quot;Lägg till&quot; för att börja</p>
+                     </div>
+                   )
+                 ) : (
+                  patient.patient_phones.length > 0 ? (
+                    patient.patient_phones.map((phone, index) => (
+                      <div key={phone.id} className="flex items-center justify-between bg-white/50 dark:bg-gray-800/50 p-3 rounded-lg border border-green-200/50 dark:border-green-700/50">
+                        <div className="flex items-center gap-3">
+                          <Phone className="w-4 h-4 text-green-500" />
+                          <span className="font-mono text-gray-900 dark:text-white font-medium">{phone.phone}</span>
+                          <Badge variant="outline" className="text-xs bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border-green-300 dark:border-green-600">
+                            {phone.label}
+                          </Badge>
+                          {index === 0 && (
+                            <Badge className="text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+                              Primär
+                            </Badge>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copyToClipboard(phone.phone, 'Telefonnummer')}
+                          className="h-8 w-8 p-0"
+                        >
+                          {copiedText === phone.phone ? (
+                            <CheckCircle className="w-4 h-4 text-green-500" />
+                          ) : (
+                            <Copy className="w-4 h-4 text-gray-400" />
+                          )}
+                        </Button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                      <Phone className="w-8 h-8 mx-auto mb-2 text-gray-300 dark:text-gray-600" />
+                      <p className="text-sm">Inga telefonnummer registrerade</p>
+                    </div>
+                  )
+                )}
+              </div>
+            </div>
 
-            {/* Message Stats */}
-            <div>
-              <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
-                Meddelandestatistik
-              </label>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-blue-50 dark:bg-blue-900/30 p-3 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="w-4 h-4 text-blue-500" />
-                    <span className="text-sm text-blue-700 dark:text-blue-400">Totalt</span>
-                  </div>
-                  <p className="text-xl font-bold text-blue-900 dark:text-blue-300">
-                    {viewingPatient.total_messages || 0}
+            {/* Internal Notes Section */}
+            <div className="bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm rounded-xl p-6 border border-gray-200/50 dark:border-gray-700/50">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-yellow-500" />
+                Interna anteckningar
+              </h3>
+              
+              {isEditing ? (
+                <Textarea
+                  value={editFormData.internal_notes}
+                  onChange={(e) => setEditFormData(prev => ({ ...prev, internal_notes: e.target.value }))}
+                  placeholder="Lägg till interna anteckningar om patienten..."
+                  rows={3}
+                  className="bg-gray-50 dark:bg-gray-800 border-gray-300 dark:border-gray-600 focus:ring-blue-500 dark:focus:ring-blue-400"
+                />
+              ) : (
+                <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border-l-4 border-yellow-400">
+                  <p className="text-gray-900 dark:text-white">
+                    {patient.internal_notes || 'Inga anteckningar tillagda'}
                   </p>
                 </div>
-                {viewingPatient.last_message_status && (
-                  <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      {getMessageStatusIcon(viewingPatient.last_message_status)}
-                      <span className="text-sm text-gray-700 dark:text-gray-400">Senaste status</span>
+              )}
+            </div>
+
+            {/* Message Stats Section */}
+            <div className="bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm rounded-xl p-6 border border-gray-200/50 dark:border-gray-700/50">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-purple-500" />
+                Meddelandestatistik
+              </h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center gap-2 mb-2">
+                    <MessageSquare className="w-5 h-5 text-purple-500" />
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Totalt meddelanden</span>
+                  </div>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-white">
+                    {patient.total_messages || 0}
+                  </p>
+                </div>
+                
+                {patient.last_message_status && (
+                  <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                    <div className="flex items-center gap-2 mb-2">
+                      {getMessageStatusIcon(patient.last_message_status)}
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Senaste status</span>
                     </div>
-                    <p className="text-xl font-bold text-gray-900 dark:text-gray-300">
-                      {viewingPatient.last_message_status === 'delivered' ? 'Levererat' :
-                       viewingPatient.last_message_status === 'sent' ? 'Skickat' :
-                       viewingPatient.last_message_status === 'failed' ? 'Misslyckat' : 'Väntar'}
+                    <p className="text-2xl font-bold text-gray-900 dark:text-white">
+                      {patient.last_message_status === 'delivered' ? 'Levererat' :
+                       patient.last_message_status === 'sent' ? 'Skickat' :
+                       patient.last_message_status === 'failed' ? 'Misslyckat' : 'Väntar'}
                     </p>
                   </div>
                 )}
               </div>
-            </div>
 
-            {/* Last Message */}
-            {viewingPatient.last_message_content && (
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
-                  Senaste meddelande
-                </label>
-                <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
+              {/* Last Message */}
+              {patient.last_message_content && (
+                <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
                   <div className="flex items-center gap-2 mb-2">
-                    {getMessageStatusIcon(viewingPatient.last_message_status)}
-                    <span className="text-sm text-gray-500">
-                      Från {viewingPatient.last_message_sender} • {formatRelativeTime(viewingPatient.last_message_at || '')}
+                    {getMessageStatusIcon(patient.last_message_status)}
+                    <span className="text-sm text-gray-600 dark:text-gray-400">
+                      Från {patient.last_message_sender} • {formatRelativeTime(patient.last_message_at || '')}
                     </span>
                   </div>
-                  <p className="text-gray-900 dark:text-white">
-                    &quot;{viewingPatient.last_message_content}&quot;
+                  <p className="text-gray-900 dark:text-white italic">
+                    &quot;{patient.last_message_content}&quot;
                   </p>
                 </div>
-              </div>
-            )}
-
-            {/* Internal Notes */}
-            {viewingPatient.internal_notes && (
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
-                  Interna anteckningar
-                </label>
-                <div className="bg-yellow-50 dark:bg-yellow-900/30 p-4 rounded-lg border-l-4 border-yellow-400">
-                  <p className="text-gray-900 dark:text-white">{viewingPatient.internal_notes}</p>
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
           
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setViewingPatient(null)}
-            >
-              Stäng
-            </Button>
-            <Button
-              onClick={() => {
-                setViewingPatient(null);
-                setEditingPatient(viewingPatient);
-              }}
-              className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700"
-            >
-              <Edit className="w-4 h-4 mr-2" />
-              Redigera
-            </Button>
-            <Button
-              onClick={() => {
-                sendSMSToPatient(viewingPatient);
-                setViewingPatient(null);
-              }}
-              className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
-            >
-              <Send className="w-4 h-4 mr-2" />
-              Skicka SMS
-            </Button>
+          <DialogFooter className="flex flex-col sm:flex-row gap-2">
+            {isEditing ? (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={cancelEditing}
+                  disabled={isSubmitting}
+                  className="w-full sm:w-auto"
+                >
+                  Avbryt
+                </Button>
+                <Button
+                  onClick={() => updatePatient(editFormData)}
+                  disabled={isSubmitting}
+                  className="w-full sm:w-auto bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2" />
+                      Sparar...
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4 mr-2" />
+                      Spara ändringar
+                    </>
+                  )}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => setViewingPatient(null)}
+                  className="w-full sm:w-auto"
+                >
+                  Stäng
+                </Button>
+                <Button
+                  onClick={() => startEditing(patient)}
+                  disabled={!!(patient.city === 'Auto-generated' && currentUser && patient.created_by !== currentUser.id)}
+                  className="w-full sm:w-auto bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700"
+                >
+                  <Edit className="w-4 h-4 mr-2" />
+                  Redigera
+                </Button>
+                <Button
+                  onClick={() => {
+                    sendSMSToPatient(patient);
+                    setViewingPatient(null);
+                  }}
+                  className="w-full sm:w-auto bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
+                >
+                  <Send className="w-4 h-4 mr-2" />
+                  Skicka SMS
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1512,7 +1764,7 @@ export default function PatientCatalog() {
 
   if (loading) {
     return (
-      <div className="container mx-auto px-6 py-8">
+      <div className="container mx-auto px-4 sm:px-6 py-6 sm:py-8">
         <div className="animate-pulse">
           <div className="h-12 bg-gray-200 dark:bg-gray-700 rounded-xl mb-8"></div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
@@ -1531,8 +1783,29 @@ export default function PatientCatalog() {
     );
   }
 
+  // Error state
+  if (error && patients.length === 0) {
+    return (
+      <div className="container mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        <div className="text-center py-12">
+          <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+            Kunde inte ladda patienter
+          </h2>
+          <p className="text-gray-600 dark:text-gray-400 mb-6">
+            {error}
+          </p>
+          <Button onClick={loadPatients} className="bg-purple-600 hover:bg-purple-700">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Försök igen
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="container mx-auto px-6 py-8">
+    <div className="container mx-auto px-4 sm:px-6 py-6 sm:py-8">
       {/* Header */}
       <motion.div 
         initial={{ opacity: 0, y: -20 }}
@@ -1798,7 +2071,6 @@ export default function PatientCatalog() {
       )}
 
       {/* Dialogs */}
-      <EditPatientDialog />
       <ViewPatientDialog />
       <DeletePatientDialog />
       <EditPhonesDialog />

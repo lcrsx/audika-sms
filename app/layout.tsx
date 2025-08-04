@@ -3,6 +3,7 @@ import { Geist } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { Footer } from "@/components/footer";
 import { Header } from "@/components/header";
+import ErrorBoundary from "@/components/error-boundary";
 import "./globals.css";
 import React from "react";
 
@@ -86,9 +87,13 @@ export default function RootLayout({
                     {/* Move Header outside of main */}
                     <Header />
                     <main className="flex-grow relative">
-                        {children}
+                        <ErrorBoundary>
+                            {children}
+                        </ErrorBoundary>
                     </main>
-                    <Footer />
+                    <div className="mt-auto">
+                        <Footer />
+                    </div>
                 </div>
             </div>
         </ThemeProvider>

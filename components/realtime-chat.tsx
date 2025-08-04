@@ -1,6 +1,6 @@
 'use client'
 
-import { cn, formatRelativeTime } from '@/lib/utils'
+// import { formatRelativeTime } from '@/lib/utils'
 import { ChatEntryItem } from '@/components/chat-message'
 import { useChatScroll } from '@/hooks/use-chat-scroll'
 import {
@@ -37,11 +37,19 @@ export const RealtimeChat = ({
   const { containerRef, scrollToBottom } = useChatScroll()
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [newChatEntry, setNewChatEntry] = useState('')
-  const [isTyping, setIsTyping] = useState(false)
+  // Typing is handled by the useRealtimeChat hook via typingUsers
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [userDisplayName, setUserDisplayName] = useState<string>(username)
-  const [currentUserSession, setCurrentUserSession] = useState<any>(null)
+  const [currentUserSession, setCurrentUserSession] = useState<{
+    id: string;
+    email?: string;
+    user_metadata?: {
+      display_name?: string;
+      role?: string;
+      [key: string]: unknown;
+    };
+  } | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const supabase = createClient()
 
@@ -132,14 +140,7 @@ export const RealtimeChat = ({
     }
   }, [allChatEntries, onChatEntry])
 
-  // Handle typing indicator
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsTyping(false)
-    }, 1000)
-
-    return () => clearTimeout(timer)
-  }, [newChatEntry])
+  // Typing indicator is handled by the useRealtimeChat hook
 
   const handleSendChatEntry = useCallback(
     async (e: React.FormEvent) => {
@@ -148,7 +149,6 @@ export const RealtimeChat = ({
 
       await sendChatEntry(newChatEntry)
       setNewChatEntry('')
-      setIsTyping(false)
       inputRef.current?.focus()
     },
     [newChatEntry, sendChatEntry]
@@ -158,7 +158,7 @@ export const RealtimeChat = ({
     (e: React.KeyboardEvent) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
-        handleSendChatEntry(e as any)
+        handleSendChatEntry(e as React.KeyboardEvent<HTMLTextAreaElement>)
       }
     },
     [handleSendChatEntry]
@@ -167,10 +167,8 @@ export const RealtimeChat = ({
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setNewChatEntry(e.target.value)
     if (e.target.value.length > 0) {
-      setIsTyping(true)
       startTyping()
     } else {
-      setIsTyping(false)
       stopTyping()
     }
   }, [startTyping, stopTyping])

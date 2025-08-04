@@ -7,10 +7,12 @@ export async function updateSession(request: NextRequest) {
     request,
   });
 
-  // If the env vars are not set, skip middleware check. You can remove this
-  // once you setup the project.
+  // If the env vars are not set, fail securely - redirect to maintenance page
   if (!hasEnvVars) {
-    return supabaseResponse;
+    console.error('CRITICAL: Supabase environment variables not configured');
+    const url = request.nextUrl.clone();
+    url.pathname = '/maintenance';
+    return NextResponse.redirect(url);
   }
 
   // With Fluid compute, don't put this client in a global environment

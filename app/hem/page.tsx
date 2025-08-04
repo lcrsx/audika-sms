@@ -6,7 +6,6 @@ import { getAllRecentMessages, getMessageStats } from '@/lib/actions/messages';
 import { formatForDisplay } from '@/lib/actions/swe-format';
 import { formatRelativeTime } from '@/lib/utils';
 import { toast } from 'sonner';
-import { generatePatientAvatar } from '@/lib/avatar-utils';
 import {
   MessageSquare,
   Send,
@@ -14,7 +13,6 @@ import {
   Clock,
   CheckCircle2,
   AlertCircle,
-  Zap,
   Activity,
   Phone,
   Star,
@@ -23,46 +21,26 @@ import {
   Search,
   Eye,
   RefreshCw,
-  Target,
-  Gauge,
   Download,
   X,
   Monitor,
-  MapPin,
   MessageCircle,
-  ChevronRight,
   Copy,
-  CheckCircle,
-  UserCheck,
-  UserX,
-  Trash2,
-  Edit,
-  Save,
-  Sparkles,
-  Heart
+  CheckCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Card, CardContent } from '@/components/ui/card';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 
 // Types
 interface Message {
@@ -116,13 +94,7 @@ interface DashboardStats {
   topSender: string;
 }
 
-interface ApiStats {
-  totalToday: number;
-  totalThisWeek: number;
-  totalThisMonth: number;
-  successRate: number;
-  userTotalToday: number;
-}
+
 
 // Utility functions
 
@@ -169,7 +141,7 @@ const StatCard = ({
   title: string;
   value: string | number;
   subtitle?: string;
-  icon: any;
+  icon: React.ComponentType<{ className?: string }>;
   trend?: string;
   gradient?: string;
   onClick?: () => void;
@@ -295,8 +267,9 @@ export default function SMSDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; email?: string; user_metadata?: { display_name?: string; full_name?: string } } | null>(null);
   const [topSenders, setTopSenders] = useState<Array<{sender: string, count: number}>>([]);
   const [viewingPatient, setViewingPatient] = useState<Patient | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
@@ -369,7 +342,7 @@ export default function SMSDashboard() {
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
         
-        const activePatients = (patientsData || []).filter((patient: any) => {
+        const activePatients = (patientsData || []).filter((patient: { last_contact_at: string | null }) => {
           if (!patient.last_contact_at) return false;
           return new Date(patient.last_contact_at) >= thirtyDaysAgo;
         }).length;
@@ -383,7 +356,7 @@ export default function SMSDashboard() {
           .select('sender_id')
           .gte('created_at', today.toISOString());
 
-        const uniqueSenders = new Set((todayMessages || []).map((m: any) => m.sender_id));
+        const uniqueSenders = new Set((todayMessages || []).map((m: { sender_id: string }) => m.sender_id));
         const activeSessions = uniqueSenders.size;
 
         setStats({
@@ -393,7 +366,7 @@ export default function SMSDashboard() {
           activePatients: activePatients,
           pendingMessages: messagesData.filter((m: Message) => m.status === 'pending').length,
           failedMessages: messagesData.filter((m: Message) => m.status === 'failed').length,
-          topSender: topSenders.length > 0 ? topSenders[0].sender : currentUser?.email?.split('@')[0]?.toUpperCase() || 'USER'
+          topSender: currentUser?.email?.split('@')[0]?.toUpperCase() || 'USER'
         });
         } else {
           console.warn('Kunde inte ladda statistik:', statsResult.error);
@@ -408,7 +381,7 @@ export default function SMSDashboard() {
           const thirtyDaysAgo = new Date();
           thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
           
-          const activePatients = (patientsData || []).filter((patient: any) => {
+          const activePatients = (patientsData || []).filter((patient: { last_contact_at: string | null }) => {
             if (!patient.last_contact_at) return false;
             return new Date(patient.last_contact_at) >= thirtyDaysAgo;
           }).length;
@@ -421,7 +394,7 @@ export default function SMSDashboard() {
             .select('sender_id')
             .gte('created_at', today.toISOString());
 
-          const uniqueSenders = new Set((todayMessages || []).map((m: any) => m.sender_id));
+          const uniqueSenders = new Set((todayMessages || []).map((m: { sender_id: string }) => m.sender_id));
           const activeSessions = uniqueSenders.size;
 
           // Set default stats if API fails
@@ -432,7 +405,7 @@ export default function SMSDashboard() {
             activePatients: activePatients,
             pendingMessages: messagesData.filter((m: Message) => m.status === 'pending').length,
             failedMessages: messagesData.filter((m: Message) => m.status === 'failed').length,
-            topSender: topSenders.length > 0 ? topSenders[0].sender : currentUser?.email?.split('@')[0]?.toUpperCase() || 'USER'
+            topSender: currentUser?.email?.split('@')[0]?.toUpperCase() || 'USER'
           });
         }
       } else {
@@ -594,16 +567,27 @@ export default function SMSDashboard() {
     }
   }, [currentUser, loadDashboardData, loadRecentChatMessages, loadSystemEvents]);
 
-  // Filter messages
-  const filteredMessages = messages.filter(message => {
-    const matchesSearch =
-      message.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      message.patients?.cnumber?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      message.recipient_phone.includes(searchQuery) ||
-      message.sender_tag.toLowerCase().includes(searchQuery.toLowerCase());
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300);
 
-    return matchesSearch;
-  });
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Filter messages with debouncing
+  const filteredMessages = React.useMemo(() => {
+    return messages.filter(message => {
+      const matchesSearch =
+        message.content.toLowerCase().includes(debouncedSearchQuery.toLowerCase()) ||
+        message.patients?.cnumber?.toLowerCase().includes(debouncedSearchQuery.toLowerCase()) ||
+        message.recipient_phone.includes(debouncedSearchQuery) ||
+        message.sender_tag.toLowerCase().includes(debouncedSearchQuery.toLowerCase());
+
+      return matchesSearch;
+    });
+  }, [messages, debouncedSearchQuery]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -676,20 +660,13 @@ export default function SMSDashboard() {
       setCopiedText(text);
       toast.success(`${label} kopierat!`);
       setTimeout(() => setCopiedText(null), 2000);
-    } catch (_error) {
+    } catch (error) {
+      console.error('Copy failed:', error);
       toast.error(`Kunde inte kopiera ${label.toLowerCase()}`);
     }
   };
 
-  // Utility functions for patient details
-  const getInitials = (name: string): string => {
-    if (!name) return 'P';
-    return name
-      .split(/\s+/)
-      .map(w => w[0]?.toUpperCase() || '')
-      .join('')
-      .slice(0, 2) || 'P';
-  };
+
 
   const getStatusBadge = (patient: Patient) => {
     if (!patient.is_active) {
@@ -910,13 +887,20 @@ export default function SMSDashboard() {
     );
   };
 
-  // Clear error after 5 seconds
+  // Clear error after 5 seconds and on component unmount
   useEffect(() => {
     if (error) {
       const timeoutId = setTimeout(() => setError(null), 5000);
       return () => clearTimeout(timeoutId);
     }
   }, [error]);
+
+  // Clear error on component unmount
+  useEffect(() => {
+    return () => {
+      setError(null);
+    };
+  }, []);
 
   return (
     <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8 relative">
@@ -997,7 +981,21 @@ export default function SMSDashboard() {
         </motion.div>
 
         {/* Stats Grid */}
-        {stats && (
+        {loading ? (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
+          >
+            {[...Array(4)].map((_, i) => (
+              <div key={i} className="bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm p-6 rounded-2xl border border-gray-200/50 dark:border-gray-700/50 animate-pulse">
+                <div className="h-8 bg-gray-200 dark:bg-gray-700 rounded mb-4"></div>
+                <div className="h-12 bg-gray-200 dark:bg-gray-700 rounded mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
+              </div>
+            ))}
+          </motion.div>
+        ) : stats ? (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1039,10 +1037,28 @@ export default function SMSDashboard() {
               gradient="from-pink-500 to-rose-500"
             />
           </motion.div>
-        )}
+        ) : null}
 
         {/* Quick Stats Row */}
-        {stats && (
+        {loading ? (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8"
+          >
+            {[...Array(2)].map((_, i) => (
+              <div key={i} className="bg-white/70 dark:bg-gray-900/70 backdrop-blur-sm p-6 rounded-2xl border border-gray-200/50 dark:border-gray-700/50 animate-pulse">
+                <div className="h-6 bg-gray-200 dark:bg-gray-700 rounded mb-4"></div>
+                <div className="h-8 bg-gray-200 dark:bg-gray-700 rounded mb-4"></div>
+                <div className="space-y-2">
+                  {[...Array(3)].map((_, j) => (
+                    <div key={j} className="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </motion.div>
+        ) : stats ? (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1065,7 +1081,7 @@ export default function SMSDashboard() {
                   messages
                     .filter(msg => msg.patients?.cnumber)
                     .slice(0, 5)
-                    .map((message, index) => (
+                    .map((message) => (
                       <div key={message.id} className="flex items-center justify-between text-sm">
                         <div className="flex items-center gap-2">
                           <Avatar className="h-6 w-6">
@@ -1105,7 +1121,7 @@ export default function SMSDashboard() {
               
               <div className="space-y-2">
                 {topSenders.length > 0 ? (
-                  topSenders.slice(0, 5).map((sender, index) => (
+                  topSenders.slice(0, 5).map((sender) => (
                     <div key={sender.sender} className="flex items-center justify-between text-sm">
                       <div className="flex items-center gap-2">
                         <Avatar className="h-6 w-6">
@@ -1127,7 +1143,7 @@ export default function SMSDashboard() {
               </div>
             </div>
           </motion.div>
-        )}
+        ) : null}
 
         {/* Main Content Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

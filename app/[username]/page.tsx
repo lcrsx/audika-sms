@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
   User,
@@ -32,7 +32,7 @@ import { LucideIcon } from 'lucide-react';
 // Type definitions
 interface AppUser {
   id: string;
-  username: string;
+  username?: string;
   display_name?: string;
   bio?: string;
   avatar_url?: string;
@@ -42,7 +42,14 @@ interface AppUser {
   profile_visibility?: string;
   dark_mode?: boolean;
   email_notifications?: boolean;
-  user_metadata?: any;
+  user_metadata?: {
+    display_name?: string;
+    bio?: string;
+    avatar_url?: string;
+    role?: string;
+    settings?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
   last_sign_in_at?: string;
 }
 
@@ -55,7 +62,7 @@ interface StatCardProps {
 
 interface InfoRowProps {
   label: string;
-  value: string;
+  value: string | React.ReactNode;
   icon?: React.ReactNode;
 }
 
@@ -178,13 +185,21 @@ function InfoRow({ label, value, icon }: InfoRowProps) {
   );
 }
 
+interface PatientContactItemProps {
+  cnumber: string;
+  name?: string;
+  lastContact: string;
+  totalMessages: number;
+  phone?: string;
+}
+
 function PatientContactItem({
                               cnumber,
                               name,
                               lastContact,
                               totalMessages,
                               phone
-                            }: any) {
+                            }: PatientContactItemProps) {
   // Generate professional avatar for patient using cnumber for consistency
   const patientAvatar = generatePatientAvatar(cnumber)
   
@@ -245,11 +260,11 @@ export default function UserProfilePage({
   const [isSaving, setIsSaving] = useState(false);
 
   // Patient contacts
-  const [patientContacts, setPatientContacts] = useState<any[]>([]);
+  const [patientContacts, setPatientContacts] = useState<PatientContactItemProps[]>([]);
   const [contactsLoading, setContactsLoading] = useState(false);
 
   // Load patient contacts for own profile
-  const loadPatientContacts = async () => {
+  const loadPatientContacts = useCallback(async () => {
     if (!isOwnProfile || !user) return;
 
     setContactsLoading(true);
@@ -268,7 +283,14 @@ export default function UserProfilePage({
       // Group by patient and get stats
       const patientStats = new Map();
 
-      messages?.forEach((msg: any) => {
+      interface MessageData {
+        patient_cnumber?: string;
+        recipient_phone?: string;
+        created_at: string;
+        sender_tag?: string;
+      }
+
+      messages?.forEach((msg: MessageData) => {
         const key = msg.patient_cnumber || msg.recipient_phone;
         if (!patientStats.has(key)) {
           patientStats.set(key, {
@@ -284,7 +306,7 @@ export default function UserProfilePage({
 
       // Convert to array and sort by last contact
       const contacts = Array.from(patientStats.values())
-          .sort((a: any, b: any) => new Date(b.lastContact).getTime() - new Date(a.lastContact).getTime())
+          .sort((a: PatientContactItemProps, b: PatientContactItemProps) => new Date(b.lastContact).getTime() - new Date(a.lastContact).getTime())
           .slice(0, 10); // Show last 10
 
       setPatientContacts(contacts);
@@ -293,17 +315,18 @@ export default function UserProfilePage({
     } finally {
       setContactsLoading(false);
     }
-  };
+  }, [isOwnProfile, user]);
 
   // Save profile changes
   const saveProfile = async () => {
-    if (!user) return;
+    if (!user || !isOwnProfile) return;
 
     setIsSaving(true);
     try {
       const supabase = createClient();
 
-      const { error } = await supabase.auth.updateUser({
+      // Update auth user metadata
+      const { error: authError } = await supabase.auth.updateUser({
         data: {
           ...user.user_metadata,
           display_name: editDisplayName,
@@ -311,7 +334,18 @@ export default function UserProfilePage({
         }
       });
 
-      if (error) throw error;
+      if (authError) throw authError;
+
+      // Update database user record
+      const { error: dbError } = await supabase
+        .from('users')
+        .update({
+          display_name: editDisplayName,
+          bio: editBio
+        })
+        .eq('id', user.id);
+
+      if (dbError) throw dbError;
 
       // Update local state
       setUser({
@@ -323,14 +357,16 @@ export default function UserProfilePage({
         }
       });
 
-      setTargetUser({
-        ...targetUser,
-        user_metadata: {
-          ...targetUser.user_metadata,
-          display_name: editDisplayName,
-          bio: editBio
-        }
-      });
+      if (targetUser) {
+        setTargetUser({
+          ...targetUser,
+          user_metadata: {
+            ...targetUser.user_metadata,
+            display_name: editDisplayName,
+            bio: editBio
+          }
+        });
+      }
 
       setIsEditingBio(false);
     } catch (error) {
@@ -343,20 +379,33 @@ export default function UserProfilePage({
 
   // Save settings changes
   const saveSettings = async () => {
-    if (!user) return;
+    if (!user || !isOwnProfile) return;
 
     setIsSaving(true);
     try {
       const supabase = createClient();
 
-      const { error } = await supabase.auth.updateUser({
+      // Update auth user metadata
+      const { error: authError } = await supabase.auth.updateUser({
         data: {
           ...user.user_metadata,
           settings: editSettings
         }
       });
 
-      if (error) throw error;
+      if (authError) throw authError;
+
+      // Update database user record
+      const { error: dbError } = await supabase
+        .from('users')
+        .update({
+          profile_visibility: editSettings.profileVisibility,
+          dark_mode: editSettings.darkMode,
+          email_notifications: editSettings.emailNotifications
+        })
+        .eq('id', user.id);
+
+      if (dbError) throw dbError;
 
       // Update local state
       setUser({
@@ -367,13 +416,15 @@ export default function UserProfilePage({
         }
       });
 
-      setTargetUser({
-        ...targetUser,
-        user_metadata: {
-          ...targetUser.user_metadata,
-          settings: editSettings
-        }
-      });
+      if (targetUser) {
+        setTargetUser({
+          ...targetUser,
+          user_metadata: {
+            ...targetUser.user_metadata,
+            settings: editSettings
+          }
+        });
+      }
 
       setIsEditingSettings(false);
     } catch (error) {
@@ -415,25 +466,47 @@ export default function UserProfilePage({
             emailNotifications: data.user.user_metadata?.settings?.emailNotifications || true
           });
         } else {
-          // Mock other user data - replace with real database query
-          const mockTargetUser = {
-            email: `${requestedUsername.toLowerCase()}@demant.com`,
-            user_metadata: {
-              display_name: requestedUsername,
-              bio: '',
-              settings: { profileVisibility: 'public' }
-            },
-            created_at: '2025-01-01T00:00:00Z'
-          };
+          // Get real user data from database
+          const { data: userData, error: userError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('username', requestedUsername)
+            .single();
 
-          if (mockTargetUser.user_metadata?.settings?.profileVisibility === 'private') {
+          if (userError || !userData) {
+            // User doesn't exist in database
+            console.log('User not found in database:', requestedUsername);
             window.location.href = '/hem';
             return;
           }
 
-          setTargetUser(mockTargetUser);
+          // Check if user profile is private
+          if (userData.profile_visibility === 'private') {
+            window.location.href = '/hem';
+            return;
+          }
+
+          // Create user object from database data
+          const targetUserData = {
+            id: userData.id,
+            email: userData.email,
+            user_metadata: {
+              display_name: userData.display_name || userData.username,
+              bio: userData.bio || '',
+              settings: {
+                profileVisibility: userData.profile_visibility || 'public',
+                darkMode: userData.dark_mode || false,
+                emailNotifications: userData.email_notifications || true
+              }
+            },
+            created_at: userData.created_at,
+            last_sign_in_at: userData.last_sign_in_at
+          };
+
+          setTargetUser(targetUserData);
         }
-      } catch (_err) {
+      } catch {
+        // Error handled by redirect
         window.location.href = '/auth/login';
       } finally {
         setLoading(false);
@@ -448,7 +521,7 @@ export default function UserProfilePage({
     if (!loading && isOwnProfile) {
       loadPatientContacts();
     }
-  }, [loading, isOwnProfile]);
+  }, [loading, isOwnProfile, loadPatientContacts]);
 
   if (loading) {
     return (
@@ -500,7 +573,7 @@ export default function UserProfilePage({
                       <AvatarImage src={avatarUrl} alt={displayName} />
                   ) : (
                       <AvatarFallback className="text-4xl font-bold bg-gradient-to-br from-blue-500 to-purple-600 text-white">
-                        {getInitials(displayName)}
+                        {getInitials(displayName || 'User')}
                       </AvatarFallback>
                   )}
                 </Avatar>
@@ -522,13 +595,15 @@ export default function UserProfilePage({
                             avatar_url: newAvatarUrl
                           }
                         })
-                        setTargetUser({
-                          ...targetUser,
-                          user_metadata: {
-                            ...targetUser.user_metadata,
-                            avatar_url: newAvatarUrl
-                          }
-                        })
+                        if (targetUser) {
+                          setTargetUser({
+                            ...targetUser,
+                            user_metadata: {
+                              ...targetUser.user_metadata,
+                              avatar_url: newAvatarUrl
+                            }
+                          });
+                        }
                       }}
                     />
                   </div>
@@ -784,7 +859,7 @@ export default function UserProfilePage({
                 ) : patientContacts.length > 0 ? (
                     <>
                       <div className="space-y-3">
-                        {patientContacts.map((contact: any, index: number) => (
+                        {patientContacts.map((contact: PatientContactItemProps) => (
                             <PatientContactItem
                                 key={contact.cnumber + contact.phone}
                                 cnumber={contact.cnumber}

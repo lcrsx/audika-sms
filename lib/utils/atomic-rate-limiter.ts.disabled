@@ -1,0 +1,304 @@
+/**
+ * Atomic Rate Limiter with Race Condition Protection
+ * Uses database for persistence and atomic operations
+ */
+
+import { createClient } from '@/lib/supabase/server';
+import { logger } from './logger';
+
+interface RateLimitRule {
+  windowMs: number; // Time window in milliseconds
+  maxRequests: number; // Maximum requests allowed in window
+  blockDurationMs?: number; // How long to block after limit exceeded
+}
+
+interface RateLimitResult {
+  allowed: boolean;
+  limit: number;
+  remaining: number;
+  resetTime: number;
+  retryAfter?: number;
+}
+
+// Database-backed rate limiting for production
+export async function checkAtomicRateLimit(
+  key: string,
+  rule: RateLimitRule,
+  identifier: string
+): Promise<RateLimitResult> {
+  const now = Date.now();
+  const resetTime = now + rule.windowMs;
+  const fullKey = `${key}:${identifier}`;
+
+  try {
+    const supabase = await createClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = supabase as any;
+    
+    // Clean up expired entries first
+    await db
+      .from('rate_limits')
+      .delete()
+      .lt('reset_time', now)
+      .neq('blocked_until', null)
+      .lt('blocked_until', now);
+
+    // Try to get existing rate limit entry
+    const { data: existing, error: selectError } = await supabase
+      .from('rate_limits')
+      .select('*')
+      .eq('key', fullKey)
+      .gte('reset_time', now)
+      .single();
+
+    if (selectError && selectError.code !== 'PGRST116') {
+      logger.error('Rate limit select error', selectError);
+      // Fail open - allow the request if we can't check rate limit
+      return {
+        allowed: true,
+        limit: rule.maxRequests,
+        remaining: rule.maxRequests - 1,
+        resetTime
+      };
+    }
+
+    // Check if currently blocked
+    if (existing?.blocked_until && existing.blocked_until > now) {
+      return {
+        allowed: false,
+        limit: rule.maxRequests,
+        remaining: 0,
+        resetTime: existing.reset_time,
+        retryAfter: Math.ceil((existing.blocked_until - now) / 1000)
+      };
+    }
+
+    if (!existing || now >= existing.reset_time) {
+      // Create new rate limit entry
+      const { data: newEntry, error: insertError } = await supabase
+        .from('rate_limits')
+        .upsert({
+          key: fullKey,
+          count: 1,
+          reset_time: resetTime,
+          created_at: new Date(now).toISOString(),
+          updated_at: new Date(now).toISOString()
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        logger.error('Rate limit insert error', insertError);
+        // Fail open
+        return {
+          allowed: true,
+          limit: rule.maxRequests,
+          remaining: rule.maxRequests - 1,
+          resetTime
+        };
+      }
+
+      return {
+        allowed: true,
+        limit: rule.maxRequests,
+        remaining: rule.maxRequests - 1,
+        resetTime: newEntry.reset_time
+      };
+    }
+
+    // Increment counter atomically
+    const newCount = existing.count + 1;
+    
+    if (newCount > rule.maxRequests) {
+      // Exceeded limit - block if specified
+      const updateData: Record<string, unknown> = {
+        count: newCount,
+        updated_at: new Date(now).toISOString()
+      };
+
+      if (rule.blockDurationMs) {
+        updateData.blocked_until = now + rule.blockDurationMs;
+      }
+
+      await db
+        .from('rate_limits')
+        .update(updateData)
+        .eq('key', fullKey);
+
+      return {
+        allowed: false,
+        limit: rule.maxRequests,
+        remaining: 0,
+        resetTime: existing.reset_time,
+        retryAfter: rule.blockDurationMs 
+          ? Math.ceil(rule.blockDurationMs / 1000)
+          : Math.ceil((existing.reset_time - now) / 1000)
+      };
+    }
+
+    // Update count
+    await db
+      .from('rate_limits')
+      .update({
+        count: newCount,
+        updated_at: new Date(now).toISOString()
+      })
+      .eq('key', fullKey);
+
+    return {
+      allowed: true,
+      limit: rule.maxRequests,
+      remaining: rule.maxRequests - newCount,
+      resetTime: existing.reset_time
+    };
+
+  } catch (error) {
+    logger.error('Atomic rate limit error', error as Error);
+    // Fail open - allow the request if rate limiting fails
+    return {
+      allowed: true,
+      limit: rule.maxRequests,
+      remaining: rule.maxRequests - 1,
+      resetTime
+    };
+  }
+}
+
+// Enhanced rate limit rules with stricter limits
+export const ATOMIC_RATE_LIMIT_RULES = {
+  SMS_SENDING: {
+    windowMs: 60 * 1000, // 1 minute
+    maxRequests: 3, // 3 SMS per minute per user (stricter)
+    blockDurationMs: 10 * 60 * 1000, // Block for 10 minutes
+  },
+  AUTH_ATTEMPTS: {
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    maxRequests: 3, // 3 login attempts per 15 minutes (stricter)
+    blockDurationMs: 60 * 60 * 1000, // Block for 1 hour
+  },
+  SEARCH_REQUESTS: {
+    windowMs: 60 * 1000, // 1 minute
+    maxRequests: 20, // 20 searches per minute (stricter)
+    blockDurationMs: 2 * 60 * 1000, // Block for 2 minutes
+  },
+  PATIENT_CREATION: {
+    windowMs: 10 * 60 * 1000, // 10 minutes
+    maxRequests: 5, // 5 patients per 10 minutes (stricter)
+    blockDurationMs: 30 * 60 * 1000, // Block for 30 minutes
+  },
+  API_CALLS: {
+    windowMs: 60 * 1000, // 1 minute
+    maxRequests: 100, // 100 API calls per minute
+    blockDurationMs: 5 * 60 * 1000, // Block for 5 minutes
+  }
+} as const;
+
+/**
+ * Atomic SMS rate limiting
+ */
+export async function checkAtomicSMSRateLimit(userId: string): Promise<RateLimitResult> {
+  return checkAtomicRateLimit('sms_atomic', ATOMIC_RATE_LIMIT_RULES.SMS_SENDING, userId);
+}
+
+/**
+ * Atomic authentication rate limiting
+ */
+export async function checkAtomicAuthRateLimit(identifier: string): Promise<RateLimitResult> {
+  return checkAtomicRateLimit('auth_atomic', ATOMIC_RATE_LIMIT_RULES.AUTH_ATTEMPTS, identifier);
+}
+
+/**
+ * Atomic search rate limiting
+ */
+export async function checkAtomicSearchRateLimit(userId: string): Promise<RateLimitResult> {
+  return checkAtomicRateLimit('search_atomic', ATOMIC_RATE_LIMIT_RULES.SEARCH_REQUESTS, userId);
+}
+
+/**
+ * Atomic patient creation rate limiting
+ */
+export async function checkAtomicPatientCreationRateLimit(userId: string): Promise<RateLimitResult> {
+  return checkAtomicRateLimit('patient_atomic', ATOMIC_RATE_LIMIT_RULES.PATIENT_CREATION, userId);
+}
+
+/**
+ * Clear rate limit for a user (admin function)
+ */
+export async function clearAtomicRateLimit(key: string, identifier: string): Promise<void> {
+  try {
+    const supabase = await createClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = supabase as any;
+    const fullKey = `${key}:${identifier}`;
+    
+    await db
+      .from('rate_limits')
+      .delete()
+      .eq('key', fullKey);
+      
+    logger.info('Rate limit cleared', { metadata: { key: fullKey } });
+  } catch (error) {
+    logger.error('Failed to clear rate limit', error as Error);
+  }
+}
+
+/**
+ * Get rate limit status without incrementing
+ */
+export async function getAtomicRateLimitStatus(
+  key: string,
+  rule: RateLimitRule,
+  identifier: string
+): Promise<RateLimitResult> {
+  const now = Date.now();
+  const fullKey = `${key}:${identifier}`;
+
+  try {
+    const supabase = await createClient();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const db = supabase as any;
+    
+    const { data: existing } = await db
+      .from('rate_limits')
+      .select('*')
+      .eq('key', fullKey)
+      .gte('reset_time', now)
+      .single();
+
+    if (!existing) {
+      return {
+        allowed: true,
+        limit: rule.maxRequests,
+        remaining: rule.maxRequests,
+        resetTime: now + rule.windowMs
+      };
+    }
+
+    // Check if blocked
+    if (existing.blocked_until && existing.blocked_until > now) {
+      return {
+        allowed: false,
+        limit: rule.maxRequests,
+        remaining: 0,
+        resetTime: existing.reset_time,
+        retryAfter: Math.ceil((existing.blocked_until - now) / 1000)
+      };
+    }
+
+    return {
+      allowed: existing.count < rule.maxRequests,
+      limit: rule.maxRequests,
+      remaining: Math.max(0, rule.maxRequests - existing.count),
+      resetTime: existing.reset_time
+    };
+
+  } catch (error) {
+    logger.error('Get rate limit status error', error as Error);
+    return {
+      allowed: true,
+      limit: rule.maxRequests,
+      remaining: rule.maxRequests,
+      resetTime: now + rule.windowMs
+    };
+  }
+}

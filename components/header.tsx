@@ -82,7 +82,12 @@ interface SearchResult {
     subtitle: string;
     icon: React.ComponentType<{ className?: string }>;
     href: string;
-    metadata?: Record<string, any>;
+    metadata?: {
+        status?: string;
+        last_contact?: string;
+        total_messages?: number;
+        [key: string]: unknown;
+    };
 }
 
 // ===========================
@@ -109,7 +114,17 @@ const getInitials = (name: string): string => {
         .slice(0, 2) || 'U';
 };
 
-const constructUserData = (authUser: { id: string; email?: string; user_metadata?: Record<string, any> }) => {
+interface AuthUser {
+    id: string;
+    email?: string;
+    user_metadata?: {
+        display_name?: string;
+        role?: string;
+        [key: string]: unknown;
+    };
+}
+
+const constructUserData = (authUser: AuthUser) => {
     const emailBase = authUser.email?.split('@')[0]?.toUpperCase() || 'USER';
     const metadata = authUser.user_metadata || {};
 
@@ -117,10 +132,10 @@ const constructUserData = (authUser: { id: string; email?: string; user_metadata
         id: authUser.id,
         email: authUser.email || '',
         username: emailBase,
-        displayName: metadata.display_name || '',
-        avatarUrl: metadata.avatar_url || '',
-        role: metadata.role || 'User',
-        bio: metadata.bio || ''
+        displayName: String(metadata.display_name || ''),
+        avatarUrl: String(metadata.avatar_url || ''),
+        role: String(metadata.role || 'User'),
+        bio: String(metadata.bio || '')
     };
 };
 
@@ -200,7 +215,7 @@ export function Header() {
             const { data: patients } = await supabase
                 .from('patients')
                 .select('*')
-                .or(`cnumber.ilike.%${query}%,city.ilike.%${query}%`)
+                .or(`cnumber.ilike.%${query.replace(/[%_\\]/g, '\\$&')}%,city.ilike.%${query.replace(/[%_\\]/g, '\\$&')}%`)
                 .limit(5);
 
             patients?.forEach(patient => {

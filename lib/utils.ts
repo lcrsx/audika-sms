@@ -31,6 +31,9 @@ export const formatTime = (dateString: string): string => {
   return date.toLocaleDateString()
 }
 
-export const hasEnvVars =
+export const hasEnvVars = Boolean(
   process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_OR_ANON_KEY;
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_OR_ANON_KEY &&
+  process.env.NEXT_PUBLIC_SUPABASE_URL.length > 0 &&
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_OR_ANON_KEY.length > 0
+);

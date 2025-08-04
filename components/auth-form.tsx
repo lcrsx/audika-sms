@@ -124,10 +124,13 @@ export function AuthForm({
         return () => clearInterval(timer);
     }, [otpSent]);
 
-    // Auto-submit when OTP is complete
+    // Auto-submit when OTP is complete - with debounce to prevent jumping
     useEffect(() => {
         if (otp.length === 6 && !isLoading && otpSent) {
-            handleVerifyOtp();
+            const timer = setTimeout(() => {
+                handleVerifyOtp();
+            }, 300); // Small delay to prevent immediate jumping
+            return () => clearTimeout(timer);
         }
     }, [otp, isLoading, otpSent, handleVerifyOtp]);
 
@@ -267,7 +270,7 @@ export function AuthForm({
                                     initial={{ opacity: 0, x: 20 }}
                                     animate={{ opacity: 1, x: 0 }}
                                     exit={{ opacity: 0, x: -20 }}
-                                    transition={{ duration: 0.3 }}
+                                    transition={{ duration: 0.2 }}
                                     className="space-y-6"
                                 >
                                     {/* Timer Display */}
@@ -317,46 +320,42 @@ export function AuthForm({
                                         className="space-y-2"
                                         initial={{ opacity: 0, y: 10 }}
                                         animate={{ opacity: 1, y: 0 }}
-                                        transition={{ duration: 0.3, delay: 0.1 }}
+                                        transition={{ duration: 0.2, delay: 0.05 }}
                                     >
                                         <Label htmlFor="otp" className="text-gray-700 dark:text-gray-300 font-medium">Kod</Label>
                                         <div className="bg-white/50 dark:bg-slate-700/50 backdrop-blur-md rounded-2xl p-4 shadow-inner">
-                                            <InputOTP
-                                                value={otp}
-                                                onChange={(v) => setOtp(v)}
-                                                maxLength={6}
-                                                textAlign="center"
-                                                disabled={isLoading}
-                                                className="mx-auto font-mono tracking-widest"
-                                                containerClassName="mx-auto"
-                                            >
-                                                <InputOTPGroup>
-                                                    <InputOTPSlot
-                                                        index={0}
-                                                        className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg"
-                                                    />
-                                                    <InputOTPSlot
-                                                        index={1}
-                                                        className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg"
-                                                    />
-                                                    <InputOTPSlot
-                                                        index={2}
-                                                        className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg"
-                                                    />
-                                                    <InputOTPSlot
-                                                        index={3}
-                                                        className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg"
-                                                    />
-                                                    <InputOTPSlot
-                                                        index={4}
-                                                        className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg"
-                                                    />
-                                                    <InputOTPSlot
-                                                        index={5}
-                                                        className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg"
-                                                    />
-                                                </InputOTPGroup>
-                                            </InputOTP>
+                                            <div className="flex justify-center items-center">
+                                                <InputOTP
+                                                    value={otp}
+                                                    onChange={(v) => setOtp(v)}
+                                                    maxLength={6}
+                                                    textAlign="center"
+                                                    disabled={isLoading}
+                                                    className="font-mono tracking-widest"
+                                                    containerClassName="flex justify-center items-center"
+                                                >
+                                                    <InputOTPGroup className="gap-2 flex justify-center">
+                                                        <InputOTPSlot
+                                                            className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg transition-all duration-200 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
+                                                            index={0} />
+                                                        <InputOTPSlot
+                                                            className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg transition-all duration-200 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
+                                                            index={1} />
+                                                        <InputOTPSlot
+                                                            className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg transition-all duration-200 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
+                                                            index={2} />
+                                                        <InputOTPSlot
+                                                            className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg transition-all duration-200 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
+                                                            index={3} />
+                                                        <InputOTPSlot
+                                                            className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg transition-all duration-200 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
+                                                            index={4} />
+                                                        <InputOTPSlot
+                                                            className="bg-white/80 dark:bg-slate-600/80 border-gray-300 dark:border-slate-500 rounded-xl h-12 w-12 text-lg transition-all duration-200 focus:border-blue-500 dark:focus:border-blue-400 focus:ring-2 focus:ring-blue-500/20 dark:focus:ring-blue-400/20"
+                                                            index={5} />
+                                                    </InputOTPGroup>
+                                                </InputOTP>
+                                            </div>
                                         </div>
                                     </motion.div>
 
@@ -376,13 +375,13 @@ export function AuthForm({
                                     </AnimatePresence>
 
                                     <motion.div
-                                        whileHover={{ scale: 1.02 }}
-                                        whileTap={{ scale: 0.98 }}
+                                        whileHover={{ scale: 1.01 }}
+                                        whileTap={{ scale: 0.99 }}
                                     >
                                         <Button
                                             onClick={handleVerifyOtp}
                                             disabled={isLoading || otp.length !== 6}
-                                            className="w-full py-6 rounded-2xl bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 text-white font-semibold text-lg shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-300"
+                                            className="w-full py-6 rounded-2xl bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 text-white font-semibold text-lg shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-200"
                                         >
                                             {isLoading ? (
                                                 <>
@@ -405,7 +404,7 @@ export function AuthForm({
                                     initial={{ opacity: 0, x: -20 }}
                                     animate={{ opacity: 1, x: 0 }}
                                     exit={{ opacity: 0, x: 20 }}
-                                    transition={{ duration: 0.3 }}
+                                    transition={{ duration: 0.2 }}
                                     onSubmit={handleSendOtp}
                                     className="space-y-6"
                                 >
@@ -413,7 +412,7 @@ export function AuthForm({
                                         className="space-y-2"
                                         initial={{ opacity: 0, y: 10 }}
                                         animate={{ opacity: 1, y: 0 }}
-                                        transition={{ duration: 0.3, delay: 0.1 }}
+                                        transition={{ duration: 0.2, delay: 0.05 }}
                                     >
                                         <Label htmlFor="email" className="text-gray-700 dark:text-gray-300 font-medium">E-postadress</Label>
                                         <div className="relative">
@@ -463,13 +462,13 @@ export function AuthForm({
                                     </AnimatePresence>
 
                                     <motion.div
-                                        whileHover={{ scale: 1.02 }}
-                                        whileTap={{ scale: 0.98 }}
+                                        whileHover={{ scale: 1.01 }}
+                                        whileTap={{ scale: 0.99 }}
                                     >
                                         <Button
                                             type="submit"
                                             disabled={isLoading}
-                                            className="w-full py-6 rounded-2xl bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold text-lg shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-300"
+                                            className="w-full py-6 rounded-2xl bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-semibold text-lg shadow-lg shadow-blue-500/25 hover:shadow-xl hover:shadow-blue-500/30 transition-all duration-200"
                                         >
                                             {isLoading ? (
                                                 <>
@@ -488,7 +487,7 @@ export function AuthForm({
                                     <motion.div
                                         initial={{ opacity: 0, y: 10 }}
                                         animate={{ opacity: 1, y: 0 }}
-                                        transition={{ duration: 0.3, delay: 0.3 }}
+                                        transition={{ duration: 0.2, delay: 0.1 }}
                                         className="flex items-center justify-center space-x-2 text-sm text-gray-600 dark:text-gray-400 bg-white/30 dark:bg-slate-700/30 backdrop-blur-sm p-3 rounded-xl"
                                     >
                                         <ClockIcon className="h-4 w-4" />

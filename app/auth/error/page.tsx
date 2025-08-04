@@ -5,12 +5,14 @@ import { Button } from "@/components/ui/button";
 import { AlertTriangle, ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { use } from "react";
 
 export default function Page({
   searchParams,
 }: Readonly<{
-  searchParams: { error: string };
+  searchParams: Promise<{ error: string }>;
 }>) {
+  const resolvedSearchParams = use(searchParams);
   return (
     <div className="min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
       {/* Animated Background Elements */}
@@ -122,9 +124,9 @@ export default function Page({
               transition={{ duration: 0.5, delay: 0.3 }}
               className="bg-white/50 dark:bg-slate-700/50 backdrop-blur-md rounded-2xl p-6 shadow-inner"
             >
-              {searchParams?.error ? (
+              {resolvedSearchParams?.error ? (
                 <p className="text-gray-700 dark:text-gray-300 text-center">
-                  <span className="font-semibold">Error:</span> {searchParams.error}
+                  <span className="font-semibold">Error:</span> {resolvedSearchParams.error}
                 </p>
               ) : (
                 <p className="text-gray-700 dark:text-gray-300 text-center">

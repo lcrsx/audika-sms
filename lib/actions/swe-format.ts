@@ -25,8 +25,12 @@ export function toInternationalFormat(raw: string): string | null {
     if (digits.startsWith('46') && digits.length === 11) return `+${digits}`;
     if (digits.startsWith('0') && digits.length === 10) return `+46${digits.slice(1)}`;
     if (digits.length === 9) return `+46${digits}`;
-    if (raw.startsWith('+46') && raw.replace(/\D/g, '').length === 11) {
-        return `+46${raw.replace(/\D/g, '').slice(2)}`;
+    // Handle numbers that already start with +46
+    if (raw.startsWith('+46')) {
+        const cleanNumber = raw.replace(/\D/g, '');
+        if (cleanNumber.length === 11 && cleanNumber.startsWith('46')) {
+            return `+${cleanNumber}`;
+        }
     }
 
     return null;

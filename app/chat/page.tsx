@@ -1,640 +1,1132 @@
-'use client'
+'use client';
 
-import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
-import { MessageSquare, User, Globe, Users, Settings, X } from 'lucide-react';
-import { RealtimeChat } from '@/components/realtime-chat';
-import { useEffect, useState, useRef } from 'react';
-import { formatRelativeTime } from '@/lib/utils';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { generateCartoonAvatar } from '@/lib/avatar-utils';
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { createClient } from "@/lib/supabase/client";
+import {
+    User,
+    Shield,
+    Mail,
+    Calendar,
+    Clock,
+    Activity,
+    MessageSquare,
+    Bell,
+    Settings as SettingsIcon,
+    Edit3,
+    ChevronRight,
+    Save,
+    X,
+    Users,
+    AlertCircle
+} from "lucide-react";
+import { motion, AnimatePresence } from 'framer-motion';
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import React from "react";
+import { AvatarRefreshButton } from '@/components/avatar-refresh-button'
+import { generatePatientAvatar } from '@/lib/avatar-utils'
+import { LucideIcon } from 'lucide-react';
+import { User as SupabaseUser } from '@supabase/supabase-js';
 
-const supabase = createClient();
+// ===========================
+// TYPE DEFINITIONS
+// ===========================
 
-interface OnlineUser {
-  id: string;
-  metadata: {
-    username: string;
-    displayName?: string;
-    avatarUrl: string;
-    role: string;
-    lastActive: string;
-  };
+interface AppUser extends SupabaseUser {
+    username?: string;
+    display_name?: string;
+    bio?: string;
+    avatar_url?: string;
+    profile_visibility?: string;
+    dark_mode?: boolean;
+    email_notifications?: boolean;
 }
 
-type PresenceData = {
-  username?: string;
-  displayName?: string;
-  avatarUrl?: string;
-  role?: string;
-  lastActive?: string;
-};
+// interface UserMetadata {
+//     display_name?: string;
+//     bio?: string;
+//     avatar_url?: string;
+//     settings?: UserSettings;
+// }
 
-type ChatTab = {
-  id: string;
-  type: 'global' | 'dm';
-  name: string;
-  username?: string;
-  isActive: boolean;
-  unreadCount?: number;
-  lastMessageTime?: string;
-};
+interface UserSettings {
+    profileVisibility?: string;
+    darkMode?: boolean;
+    emailNotifications?: boolean;
+}
 
-// Local storage keys
-const CHAT_TABS_KEY = 'audika_chat_tabs'
-const ACTIVE_TAB_KEY = 'audika_active_tab'
+interface StatCardProps {
+    label: string;
+    value: string | number;
+    icon: LucideIcon;
+    color: string;
+}
 
-// Helper function to get initials
+interface InfoRowProps {
+    label: string;
+    value: string;
+    icon?: React.ReactNode;
+}
+
+interface PatientContact {
+    cnumber: string;
+    phone?: string;
+    lastContact: string;
+    totalMessages: number;
+    name?: string;
+}
+
+interface ProfileCardProps {
+    title: string;
+    icon: React.ReactNode;
+    children: React.ReactNode;
+    className?: string;
+    gradient?: string;
+}
+
+interface EditState {
+    displayName: string;
+    bio: string;
+    settings: UserSettings;
+}
+
+interface MessageData {
+    patient_cnumber?: string;
+    recipient_phone?: string;
+    created_at: string;
+    content?: string;
+    sender_tag?: string;
+}
+
+// ===========================
+// UTILITY FUNCTIONS
+// ===========================
+
 const getInitials = (name: string): string => {
-  if (!name) return 'U';
-  return name
-    .split(/\s+/)
-    .map(w => w[0]?.toUpperCase() || '')
-    .join('')
-    .slice(0, 2) || 'U';
+    if (!name) return 'U';
+    return name
+        .split(/\s+/)
+        .map(w => w[0]?.toUpperCase() || '')
+        .join('')
+        .slice(0, 2) || 'U';
 };
 
-export default function ChatPage() {
-    const [userDisplayName, setUserDisplayName] = useState<string>('User');
-    const [currentUserSession, setCurrentUserSession] = useState<{ id: string; email?: string; user_metadata?: { display_name?: string; full_name?: string } } | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
-    const [isOnline, setIsOnline] = useState(false);
-    const [chatTabs, setChatTabs] = useState<ChatTab[]>([]);
-    const [activeTab, setActiveTab] = useState<string>('global');
-    const [showSettings, setShowSettings] = useState(false);
-    const [showAllUsers, setShowAllUsers] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const channelRef = useRef<{ subscribe: (callback: (payload: { presence: Record<string, unknown> }) => void) => { unsubscribe: () => void } } | null>(null);
-    const mountedRef = useRef(true);
-
-    // Load chat tabs from localStorage on mount
-    useEffect(() => {
-        try {
-            const savedTabs = localStorage.getItem(CHAT_TABS_KEY);
-            const savedActiveTab = localStorage.getItem(ACTIVE_TAB_KEY);
-            
-            if (savedTabs) {
-                const parsedTabs = JSON.parse(savedTabs) as ChatTab[];
-                setChatTabs(parsedTabs);
-                
-                if (savedActiveTab && parsedTabs.find(tab => tab.id === savedActiveTab)) {
-                    setActiveTab(savedActiveTab);
-                } else {
-                    setActiveTab(parsedTabs[0]?.id || 'global');
-                }
-            } else {
-                // Initialize with default global tab
-                const defaultTabs: ChatTab[] = [
-                    { id: 'global', type: 'global', name: 'Global Chat', isActive: true }
-                ];
-                setChatTabs(defaultTabs);
-                setActiveTab('global');
-            }
-        } catch (err) {
-            console.error('Failed to load chat tabs:', err);
-            // Fallback to default
-            const defaultTabs: ChatTab[] = [
-                { id: 'global', type: 'global', name: 'Global Chat', isActive: true }
-            ];
-            setChatTabs(defaultTabs);
-            setActiveTab('global');
-        }
-    }, []);
-
-    // Save chat tabs to localStorage whenever they change
-    useEffect(() => {
-        if (chatTabs.length > 0) {
-            try {
-                localStorage.setItem(CHAT_TABS_KEY, JSON.stringify(chatTabs));
-            } catch (err) {
-                console.error('Failed to save chat tabs:', err);
-            }
-        }
-    }, [chatTabs]);
-
-    // Save active tab to localStorage whenever it changes
-    useEffect(() => {
-        if (activeTab) {
-            try {
-                localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
-            } catch (err) {
-                console.error('Failed to save active tab:', err);
-            }
-        }
-    }, [activeTab]);
-
-    // Get user data on client side
-    useEffect(() => {
-        const getUserData = async () => {
-            try {
-                const supabase = createClient();
-                const { data: { session } } = await supabase.auth.getSession();
-                
-                if (!session) {
-        redirect('/auth/login');
-    }
-
-                // Get user display name from metadata
-                let displayName = session.user.email?.split('@')[0] ?? 'User';
-                if (session.user.user_metadata?.display_name) {
-                    displayName = session.user.user_metadata.display_name;
-                } else if (session.user.user_metadata?.full_name) {
-                    displayName = session.user.user_metadata.full_name;
-                }
-                
-                setUserDisplayName(displayName);
-                setCurrentUserSession(session.user);
-                setError(null);
-            } catch (err) {
-                console.error('Failed to get user data:', err);
-                setError('Failed to load user data');
-            } finally {
-                setIsLoading(false);
-            }
-        };
-
-        getUserData();
-
-        // Listen for auth state changes to update immediately when user updates their avatar
-        const { data: { subscription } } = supabase.auth.onAuthStateChange((_, session) => {
-            if (session?.user) {
-                setCurrentUserSession(session.user);
-                // Update display name as well
-                let displayName = session.user.email?.split('@')[0] ?? 'User';
-                if (session.user.user_metadata?.display_name) {
-                    displayName = session.user.user_metadata.display_name;
-                } else if (session.user.user_metadata?.full_name) {
-                    displayName = session.user.user_metadata.full_name;
-                }
-                setUserDisplayName(displayName);
-            }
+const formatDate = (dateString: string): string => {
+    try {
+        return new Date(dateString).toLocaleDateString('sv-SE', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
         });
+    } catch {
+        return 'Okänt datum';
+    }
+};
 
-        return () => subscription.unsubscribe();
-    }, []);
+const formatRelativeTime = (dateString: string): string => {
+    try {
+        const now = new Date();
+        const date = new Date(dateString);
+        const diffMs = now.getTime() - date.getTime();
 
-    // Set up presence tracking (same as footer)
+        if (diffMs < 0) return 'Just nu';
+
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+        if (diffMinutes < 60) return `${diffMinutes}m sedan`;
+        if (diffHours < 24) return `${diffHours}h sedan`;
+        if (diffDays < 7) return `${diffDays}d sedan`;
+        return formatDate(dateString);
+    } catch {
+        return 'Okänt';
+    }
+};
+
+// ===========================
+// COMPONENTS
+// ===========================
+
+const ProfileCard = React.memo<ProfileCardProps>(({
+                                                      title,
+                                                      icon,
+                                                      children,
+                                                      className = '',
+                                                      gradient = 'from-blue-500/10 to-purple-500/10'
+                                                  }) => (
+    <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+        className={`
+      relative overflow-hidden
+      bg-white/60 dark:bg-slate-800/60
+      backdrop-blur-xl
+      border border-white/20 dark:border-white/10
+      rounded-2xl p-6
+      shadow-lg hover:shadow-xl
+      transition-all duration-300
+      group
+      ${className}
+    `}
+    >
+        <div className={`
+      absolute inset-0 opacity-0 group-hover:opacity-100
+      bg-gradient-to-br ${gradient}
+      transition-opacity duration-500
+      rounded-2xl
+    `} />
+
+        <div className="relative z-10">
+            <div className="flex items-center gap-3 mb-4">
+                <div className="
+          p-2 rounded-xl
+          bg-gradient-to-br from-blue-500 to-purple-600
+          text-white shadow-md
+        ">
+                    {icon}
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                    {title}
+                </h3>
+            </div>
+            {children}
+        </div>
+    </motion.div>
+));
+
+ProfileCard.displayName = 'ProfileCard';
+
+const StatCard = React.memo<StatCardProps>(({ label, value, icon: Icon, color }) => (
+    <div className="text-center p-4 rounded-xl bg-white/30 dark:bg-black/30 hover:bg-white/40 dark:hover:bg-black/40 transition-all duration-300">
+        <div className={`mx-auto mb-2 p-2 rounded-lg bg-gradient-to-br ${color} w-fit`}>
+            <Icon className="h-5 w-5 text-white" />
+        </div>
+        <p className="text-2xl font-bold text-gray-900 dark:text-white">{value}</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400">{label}</p>
+    </div>
+));
+
+StatCard.displayName = 'StatCard';
+
+const InfoRow = React.memo<InfoRowProps>(({ label, value, icon }) => (
+    <div className="flex items-center justify-between py-3 px-4 rounded-xl bg-white/20 dark:bg-black/20 hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300">
+        <div className="flex items-center gap-3">
+            {icon && <div className="text-gray-600 dark:text-gray-400">{icon}</div>}
+            <span className="text-gray-600 dark:text-gray-400 font-medium">{label}</span>
+        </div>
+        <span className="font-semibold text-gray-900 dark:text-white text-right">{value}</span>
+    </div>
+));
+
+InfoRow.displayName = 'InfoRow';
+
+const PatientContactItem = React.memo<{
+    contact: PatientContact;
+    onClick?: () => void;
+}>(({ contact, onClick }) => {
+    const patientAvatar = useMemo(() =>
+            generatePatientAvatar(contact.cnumber),
+        [contact.cnumber]
+    );
+
+    const handleClick = useCallback(() => {
+        onClick?.();
+    }, [onClick]);
+
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onClick?.();
+        }
+    }, [onClick]);
+
+    return (
+        <div
+            className="flex items-center gap-4 p-4 rounded-xl bg-white/20 dark:bg-black/20 hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300 group cursor-pointer"
+            onClick={handleClick}
+            role="button"
+            tabIndex={0}
+            onKeyDown={handleKeyDown}
+        >
+            <Avatar className="h-10 w-10">
+                <AvatarImage src={patientAvatar} alt={contact.name || `Patient ${contact.cnumber}`} />
+                <AvatarFallback className="bg-gradient-to-br from-green-500 to-emerald-600 text-white text-sm font-medium">
+                    {getInitials(contact.cnumber)}
+                </AvatarFallback>
+            </Avatar>
+
+            <div className="flex-1 min-w-0">
+                <h4 className="font-semibold text-gray-900 dark:text-white truncate">
+                    {contact.name || `Patient ${contact.cnumber}`}
+                </h4>
+                <p className="text-sm text-gray-600 dark:text-gray-400 truncate">
+                    {contact.totalMessages} meddelanden • {formatRelativeTime(contact.lastContact)}
+                </p>
+                {contact.phone && (
+                    <p className="text-xs text-gray-500 dark:text-gray-500 truncate">{contact.phone}</p>
+                )}
+            </div>
+
+            <div className="p-2 rounded-lg bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-md group-hover:scale-110 transition-transform duration-300">
+                <MessageSquare className="h-4 w-4" />
+            </div>
+
+            <ChevronRight className="h-4 w-4 text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition-colors duration-300" />
+        </div>
+    );
+});
+
+PatientContactItem.displayName = 'PatientContactItem';
+
+const LoadingSpinner = React.memo(() => (
+    <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-500"></div>
+    </div>
+));
+
+LoadingSpinner.displayName = 'LoadingSpinner';
+
+const ErrorAlert = React.memo<{ message: string }>(({ message }) => (
+    <Alert className="mb-4">
+        <AlertCircle className="h-4 w-4" />
+        <AlertDescription>{message}</AlertDescription>
+    </Alert>
+));
+
+ErrorAlert.displayName = 'ErrorAlert';
+
+// ===========================
+// CUSTOM HOOKS
+// ===========================
+
+const useProfileData = (params: Promise<{ username: string }>) => {
+    const [user, setUser] = useState<AppUser | null>(null);
+    const [targetUser, setTargetUser] = useState<AppUser | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [isOwnProfile, setIsOwnProfile] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
     useEffect(() => {
-        mountedRef.current = true;
+        let isMounted = true;
 
-        const supabase = createClient();
+        const loadData = async () => {
+            try {
+                setError(null);
+                const supabase = createClient();
+                const resolvedParams = await params;
 
-        // Create stable presence key
-        const getPresenceKey = () => {
-            const stored = sessionStorage.getItem('presence_key');
-            if (stored) return stored;
+                const { data, error } = await supabase.auth.getUser();
 
-            const newKey = `user_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-            sessionStorage.setItem('presence_key', newKey);
-            return newKey;
-        };
-
-        const presenceKey = getPresenceKey();
-
-        // Create channel with presence configuration
-        const channel = supabase
-            .channel('online-users', {
-                config: {
-                    presence: {
-                        key: presenceKey
+                if (error || !data?.user) {
+                    if (isMounted) {
+                        window.location.href = '/auth/login';
                     }
+                    return;
                 }
-            })
-            .on('presence', { event: 'sync' }, () => {
-                if (!mountedRef.current) return;
 
-                try {
-                    const state = channel.presenceState();
-                    const userList: OnlineUser[] = [];
-                    const seenUsers = new Set<string>();
+                const currentUsername = data.user.email?.split('@')[0]?.toUpperCase();
+                const requestedUsername = resolvedParams.username.toUpperCase();
+                const isOwn = currentUsername === requestedUsername;
 
-                    // Process presence state and avoid duplicates
-                    Object.entries(state).forEach(([presenceId, presences]) => {
-                        const presence = presences[0] as PresenceData;
-                        if (presence && presence.username) {
-                            // Use username as unique identifier to prevent duplicates
-                            const uniqueKey = presence.username.toLowerCase();
+                if (!isMounted) return;
 
-                            if (!seenUsers.has(uniqueKey)) {
-                                seenUsers.add(uniqueKey);
-                                userList.push({
-                                    id: presenceId,
-                                    metadata: {
-                                        username: presence.username,
-                                        displayName: presence.displayName,
-                                        avatarUrl: presence.avatarUrl || '',
-                                        role: presence.role || 'User',
-                                        lastActive: presence.lastActive || new Date().toISOString()
-                                    }
-                                });
-                            }
+                setUser(data.user as AppUser);
+                setIsOwnProfile(isOwn);
+
+                if (isOwn) {
+                    setTargetUser(data.user as AppUser);
+                } else {
+                    // Get user data from database
+                    const { data: userData, error: userError } = await supabase
+                        .from('users')
+                        .select('*')
+                        .eq('username', requestedUsername)
+                        .single();
+
+                    if (userError || !userData) {
+                        if (isMounted) {
+                            setError('Användaren kunde inte hittas');
                         }
-                    });
-
-                    setOnlineUsers(userList);
-                    setIsOnline(true);
-                    setError(null);
-                } catch (err) {
-                    console.error('Failed to load users:', err);
-                    setError('Failed to load online users');
-                }
-            });
-
-        channelRef.current = channel;
-
-        // Subscribe and track presence
-        channel.subscribe(async (status) => {
-            if (status === 'SUBSCRIBED' && mountedRef.current) {
-                try {
-                    const { data: { user: currentUser }, error: authError } = await supabase.auth.getUser();
-
-                    if (authError || !currentUser) {
-                        setIsOnline(false);
-                        setError('Authentication failed');
                         return;
                     }
 
-                    // Construct user data
-                    const emailBase = currentUser.email?.split('@')[0]?.toUpperCase() || 'USER';
-                    const metadata = currentUser.user_metadata || {};
-                    let displayName = emailBase;
-                    if (metadata.display_name) {
-                        displayName = metadata.display_name;
-                    } else if (metadata.full_name) {
-                        displayName = metadata.full_name;
+                    if (userData.profile_visibility === 'private') {
+                        if (isMounted) {
+                            setError('Denna profil är privat');
+                        }
+                        return;
                     }
 
-                    // Track presence with current timestamp
-                    await channel.track({
-                        username: emailBase,
-                        displayName: displayName,
-                        avatarUrl: metadata.avatar_url || '',
-                        role: metadata.role || 'User',
-                        lastActive: new Date().toISOString(),
-                    });
+                    const targetUserData: AppUser = {
+                        ...data.user,
+                        id: userData.id,
+                        username: userData.username,
+                        email: userData.email,
+                        display_name: userData.display_name,
+                        bio: userData.bio,
+                        user_metadata: {
+                            display_name: userData.display_name || userData.username,
+                            bio: userData.bio || '',
+                            settings: {
+                                profileVisibility: userData.profile_visibility || 'public',
+                                darkMode: userData.dark_mode || false,
+                                emailNotifications: userData.email_notifications || true
+                            }
+                        },
+                        created_at: userData.created_at,
+                        last_sign_in_at: userData.last_sign_in_at
+                    };
 
-                    setError(null);
-                } catch (err) {
-                    console.error('Failed to connect:', err);
-                    setIsOnline(false);
-                    setError('Failed to connect to presence system');
+                    if (isMounted) {
+                        setTargetUser(targetUserData);
+                    }
+                }
+            } catch (err) {
+                if (isMounted) {
+                    setError('Ett fel uppstod vid inläsning av profilen');
+                    console.error('Profile loading error:', err);
+                }
+            } finally {
+                if (isMounted) {
+                    setLoading(false);
                 }
             }
-        });
+        };
+
+        loadData();
 
         return () => {
-            mountedRef.current = false;
-            if (channelRef.current) {
-                supabase.removeChannel(channelRef.current);
-            }
+            isMounted = false;
         };
+    }, [params]);
+
+    return { user, targetUser, loading, isOwnProfile, error, setUser, setTargetUser };
+};
+
+const usePatientContacts = (user: AppUser | null, isOwnProfile: boolean) => {
+    const [patientContacts, setPatientContacts] = useState<PatientContact[]>([]);
+    const [contactsLoading, setContactsLoading] = useState(false);
+    const [contactsError, setContactsError] = useState<string | null>(null);
+
+    const loadPatientContacts = useCallback(async () => {
+        if (!isOwnProfile || !user) return;
+
+        setContactsLoading(true);
+        setContactsError(null);
+
+        try {
+            const supabase = createClient();
+            const senderTag = user.email?.split('@')[0]?.toUpperCase();
+
+            if (!senderTag) {
+                throw new Error('Kunde inte identifiera användare');
+            }
+
+            const { data: messages, error } = await supabase
+                .from('messages')
+                .select('patient_cnumber, recipient_phone, created_at, content, sender_tag')
+                .eq('sender_tag', senderTag)
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+
+            const patientStats = new Map<string, PatientContact>();
+
+            messages?.forEach((msg: MessageData) => {
+                const key = msg.patient_cnumber || msg.recipient_phone || 'unknown';
+                if (!patientStats.has(key)) {
+                    patientStats.set(key, {
+                        cnumber: msg.patient_cnumber || 'PHONE',
+                        phone: msg.recipient_phone,
+                        lastContact: msg.created_at,
+                        totalMessages: 0,
+                        name: undefined
+                    });
+                }
+                const contact = patientStats.get(key)!;
+                contact.totalMessages++;
+            });
+
+            const contacts = Array.from(patientStats.values())
+                .sort((a, b) => new Date(b.lastContact).getTime() - new Date(a.lastContact).getTime())
+                .slice(0, 10);
+
+            setPatientContacts(contacts);
+        } catch (error) {
+            console.error('Error loading patient contacts:', error);
+            setContactsError('Kunde inte ladda patientkontakter');
+        } finally {
+            setContactsLoading(false);
+        }
+    }, [isOwnProfile, user]);
+
+    useEffect(() => {
+        loadPatientContacts();
+    }, [loadPatientContacts]);
+
+    return { patientContacts, contactsLoading, contactsError, loadPatientContacts };
+};
+
+// ===========================
+// MAIN COMPONENT
+// ===========================
+
+export default function UserProfilePage({
+                                            params
+                                        }: {
+    params: Promise<{ username: string }>;
+}) {
+    const { user, targetUser, loading, isOwnProfile, error, setUser, setTargetUser } = useProfileData(params);
+    const { patientContacts, contactsLoading, contactsError } = usePatientContacts(user, isOwnProfile);
+
+    // Edit states
+    const [isEditingBio, setIsEditingBio] = useState(false);
+    const [isEditingSettings, setIsEditingSettings] = useState(false);
+    const [editState, setEditState] = useState<EditState>({
+        displayName: '',
+        bio: '',
+        settings: {
+            profileVisibility: 'public',
+            darkMode: false,
+            emailNotifications: true
+        }
+    });
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
+
+    // Initialize edit state when targetUser changes
+    useEffect(() => {
+        if (targetUser && isOwnProfile) {
+            setEditState({
+                displayName: targetUser.user_metadata?.display_name || '',
+                bio: targetUser.user_metadata?.bio || '',
+                settings: {
+                    profileVisibility: targetUser.user_metadata?.settings?.profileVisibility || 'public',
+                    darkMode: targetUser.user_metadata?.settings?.darkMode || false,
+                    emailNotifications: targetUser.user_metadata?.settings?.emailNotifications || true
+                }
+            });
+        }
+    }, [targetUser, isOwnProfile]);
+
+    const saveProfile = useCallback(async () => {
+        if (!user || !isOwnProfile) return;
+
+        setIsSaving(true);
+        setSaveError(null);
+
+        try {
+            const supabase = createClient();
+
+            // Update auth user metadata
+            const { error: authError } = await supabase.auth.updateUser({
+                data: {
+                    ...user.user_metadata,
+                    display_name: editState.displayName,
+                    bio: editState.bio
+                }
+            });
+
+            if (authError) throw authError;
+
+            // Update database user record
+            const { error: dbError } = await supabase
+                .from('users')
+                .update({
+                    display_name: editState.displayName,
+                    bio: editState.bio
+                })
+                .eq('id', user.id);
+
+            if (dbError) throw dbError;
+
+            // Update local state
+            const updatedMetadata = {
+                ...user.user_metadata,
+                display_name: editState.displayName,
+                bio: editState.bio
+            };
+
+            setUser({ ...user, user_metadata: updatedMetadata });
+            setTargetUser(prev => prev ? { ...prev, user_metadata: updatedMetadata } : null);
+
+            setIsEditingBio(false);
+        } catch (error) {
+            console.error('Error saving profile:', error);
+            setSaveError('Kunde inte spara profilen. Försök igen.');
+        } finally {
+            setIsSaving(false);
+        }
+    }, [user, isOwnProfile, editState, setUser, setTargetUser]);
+
+    const saveSettings = useCallback(async () => {
+        if (!user || !isOwnProfile) return;
+
+        setIsSaving(true);
+        setSaveError(null);
+
+        try {
+            const supabase = createClient();
+
+            // Update auth user metadata
+            const { error: authError } = await supabase.auth.updateUser({
+                data: {
+                    ...user.user_metadata,
+                    settings: editState.settings
+                }
+            });
+
+            if (authError) throw authError;
+
+            // Update database user record
+            const { error: dbError } = await supabase
+                .from('users')
+                .update({
+                    profile_visibility: editState.settings.profileVisibility,
+                    dark_mode: editState.settings.darkMode,
+                    email_notifications: editState.settings.emailNotifications
+                })
+                .eq('id', user.id);
+
+            if (dbError) throw dbError;
+
+            // Update local state
+            const updatedMetadata = {
+                ...user.user_metadata,
+                settings: editState.settings
+            };
+
+            setUser({ ...user, user_metadata: updatedMetadata });
+            setTargetUser(prev => prev ? { ...prev, user_metadata: updatedMetadata } : null);
+
+            setIsEditingSettings(false);
+        } catch (error) {
+            console.error('Error saving settings:', error);
+            setSaveError('Kunde inte spara inställningarna. Försök igen.');
+        } finally {
+            setIsSaving(false);
+        }
+    }, [user, isOwnProfile, editState, setUser, setTargetUser]);
+
+    // Memoized computed values
+    const profileData = useMemo(() => {
+        if (!targetUser) return null;
+
+        const { email, created_at, last_sign_in_at, user_metadata } = targetUser;
+        const username = email?.split('@')[0]?.toUpperCase();
+        const displayName = user_metadata?.display_name || username;
+        const bio = user_metadata?.bio || '';
+        const avatarUrl = user_metadata?.avatar_url;
+        const settings = user_metadata?.settings || {};
+
+        const memberSince = created_at ? new Date(created_at).getFullYear() : new Date().getFullYear();
+        const daysSinceJoin = created_at ?
+            Math.floor((Date.now() - new Date(created_at).getTime()) / (1000 * 60 * 60 * 24)) : 0;
+
+        return {
+            username,
+            displayName,
+            bio,
+            avatarUrl,
+            settings,
+            memberSince,
+            daysSinceJoin,
+            email,
+            lastSignIn: last_sign_in_at
+        };
+    }, [targetUser]);
+
+    const handleContactClick = useCallback((contact: PatientContact) => {
+        console.log('Contact clicked:', contact);
     }, []);
 
-    // Handle starting a DM
-    const startDM = (user: OnlineUser) => {
-        const dmId = `dm-${user.metadata.username}`;
-        const dmName = user.metadata.displayName || user.metadata.username;
-        
-        // Check if DM tab already exists
-        const existingTab = chatTabs.find(tab => tab.id === dmId);
-        if (existingTab) {
-            // Switch to existing tab
-            const newTabs = chatTabs.map(tab => ({
-                ...tab,
-                isActive: tab.id === dmId
-            }));
-            setChatTabs(newTabs);
-            setActiveTab(dmId);
-            return;
-        }
+    const handleCloseEditBio = useCallback(() => {
+        setIsEditingBio(false);
+        setSaveError(null);
+    }, []);
 
-        // Add new DM tab
-        const newTabs = chatTabs.map(tab => ({ ...tab, isActive: false }));
-        newTabs.push({
-            id: dmId,
-            type: 'dm',
-            name: dmName,
-            username: user.metadata.username,
-            isActive: true,
-            unreadCount: 0,
-            lastMessageTime: new Date().toISOString()
-        });
+    const handleCloseEditSettings = useCallback(() => {
+        setIsEditingSettings(false);
+        setSaveError(null);
+    }, []);
 
-        setChatTabs(newTabs);
-        setActiveTab(dmId);
-    };
+    if (loading) {
+        return <LoadingSpinner />;
+    }
 
-    // Handle closing a tab
-    const closeTab = (tabId: string) => {
-        if (chatTabs.length <= 1) return; // Don't close the last tab
-        
-        const newTabs = chatTabs.filter(tab => tab.id !== tabId);
-        const wasActive = chatTabs.find(tab => tab.id === tabId)?.isActive;
-        
-        if (wasActive) {
-            // Switch to the first available tab
-            newTabs[0].isActive = true;
-            setActiveTab(newTabs[0].id);
-        }
-        
-        setChatTabs(newTabs);
-    };
-
-    // Handle tab switching
-    const switchTab = (tabId: string) => {
-        const newTabs = chatTabs.map(tab => ({
-            ...tab,
-            isActive: tab.id === tabId,
-            unreadCount: tab.id === tabId ? 0 : tab.unreadCount // Clear unread count when switching to tab
-        }));
-        setChatTabs(newTabs);
-        setActiveTab(tabId);
-    };
-
-    // Handle settings button
-    const handleSettings = () => {
-        setShowSettings(!showSettings);
-        // You can add actual settings functionality here
-        console.log('Settings clicked - implement settings modal/page');
-    };
-
-    // Handle view all users
-    const handleViewAll = () => {
-        setShowAllUsers(!showAllUsers);
-        // You can add actual view all functionality here
-        console.log('View All clicked - implement expanded users view');
-    };
-
-    if (isLoading) {
+    if (error) {
         return (
-            <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8 relative">
-                <div className="flex items-center justify-center h-64">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
+            <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8">
+                <ErrorAlert message={error} />
+                <div className="text-center">
+                    <Button onClick={() => window.location.href = '/hem'}>
+                        Tillbaka till start
+                    </Button>
                 </div>
             </div>
         );
     }
 
+    if (!user || !targetUser || !profileData) {
+        return null;
+    }
+
     return (
         <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8 relative">
-            {/* Enhanced animated background elements */}
+            {/* Animated background elements */}
             <div className="absolute inset-0 overflow-visible pointer-events-none">
-                <div className="absolute -top-40 -right-40 w-80 h-80 bg-gradient-to-br from-purple-400/20 to-pink-600/20 rounded-full blur-3xl animate-pulse" />
-                <div className="absolute -bottom-20 -left-20 w-80 h-80 bg-gradient-to-br from-indigo-400/20 to-purple-600/20 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '3s' }} />
-                <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-gradient-to-br from-pink-400/10 to-indigo-600/10 rounded-full blur-3xl animate-pulse" style={{ animationDelay: '1.5s' }} />
-                <div className="absolute top-20 right-1/4 w-32 h-32 bg-gradient-to-br from-yellow-400/15 to-orange-600/15 rounded-full blur-2xl animate-pulse" style={{ animationDelay: '2s' }} />
-                <div className="absolute bottom-40 left-1/4 w-24 h-24 bg-gradient-to-br from-green-400/15 to-emerald-600/15 rounded-full blur-2xl animate-pulse" style={{ animationDelay: '4s' }} />
+                <div className="absolute -top-40 -right-40 w-80 h-80 bg-gradient-to-br from-blue-400/20 to-purple-600/20 rounded-full blur-3xl animate-pulse" />
+                <div className="absolute -bottom-40 -left-40 w-80 h-80 bg-gradient-to-br from-green-400/20 to-blue-600/20 rounded-full blur-3xl animate-pulse" />
             </div>
 
-            <div className="relative z-10 space-y-8">
-                {/* Error Display */}
-                {error && (
-                    <div className="bg-red-100/80 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl p-4 text-red-700 dark:text-red-400 text-center animate-in fade-in duration-300">
-                        <p className="font-medium">⚠️ {error}</p>
-                        <p className="text-sm mt-1">Please refresh the page or try again later.</p>
+            {/* Header */}
+            <div className="relative z-10 mb-8">
+                <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
+                    <div className="relative">
+                        <Avatar className="h-32 w-32 ring-4 ring-white/20 shadow-xl">
+                            <AvatarImage src={profileData.avatarUrl} alt={profileData.displayName} />
+                            <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white text-3xl font-bold">
+                                {getInitials(profileData.displayName || 'U')}
+                            </AvatarFallback>
+                        </Avatar>
+                        {isOwnProfile && (
+                            <div className="absolute -bottom-2 -right-2">
+                                <AvatarRefreshButton />
                             </div>
+                        )}
+                    </div>
+
+                    <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-2">
+                            <h1 className="text-4xl font-bold text-gray-900 dark:text-white">
+                                {profileData.displayName}
+                            </h1>
+                            {isOwnProfile && (
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setIsEditingBio(true)}
+                                    className="p-2"
+                                >
+                                    <Edit3 className="h-4 w-4" />
+                                </Button>
+                            )}
+                        </div>
+
+                        <p className="text-xl text-gray-600 dark:text-gray-400 mb-4">
+                            @{profileData.username}
+                        </p>
+
+                        {profileData.bio && (
+                            <p className="text-gray-700 dark:text-gray-300 max-w-2xl leading-relaxed">
+                                {profileData.bio}
+                            </p>
+                        )}
+
+                        <div className="flex flex-wrap gap-4 mt-4">
+                            <Badge variant="secondary" className="bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200">
+                                <Calendar className="h-3 w-3 mr-1" />
+                                Medlem sedan {profileData.memberSince}
+                            </Badge>
+
+                            {profileData.lastSignIn && (
+                                <Badge variant="secondary" className="bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200">
+                                    <Activity className="h-3 w-3 mr-1" />
+                                    Senast aktiv {formatRelativeTime(profileData.lastSignIn)}
+                                </Badge>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Error Display */}
+            {(saveError || contactsError) && (
+                <div className="relative z-10 mb-6">
+                    {saveError && <ErrorAlert message={saveError} />}
+                    {contactsError && <ErrorAlert message={contactsError} />}
+                </div>
+            )}
+
+            {/* Stats Overview */}
+            <div className="relative z-10 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <StatCard
+                    label="Dagar som medlem"
+                    value={profileData.daysSinceJoin}
+                    icon={Calendar}
+                    color="from-blue-500 to-cyan-500"
+                />
+                <StatCard
+                    label="Profil visningar"
+                    value="–"
+                    icon={User}
+                    color="from-purple-500 to-pink-500"
+                />
+                {isOwnProfile && (
+                    <>
+                        <StatCard
+                            label="Aktiva samtal"
+                            value={patientContacts.length}
+                            icon={MessageSquare}
+                            color="from-green-500 to-emerald-500"
+                        />
+                        <StatCard
+                            label="Totala meddelanden"
+                            value={patientContacts.reduce((sum, contact) => sum + contact.totalMessages, 0)}
+                            icon={Activity}
+                            color="from-orange-500 to-red-500"
+                        />
+                    </>
+                )}
+            </div>
+
+            <div className="relative z-10 grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Profile Information */}
+                <ProfileCard
+                    title="Profilinformation"
+                    icon={<User className="h-5 w-5" />}
+                    gradient="from-blue-500/10 to-purple-500/10"
+                >
+                    <div className="space-y-3">
+                        <InfoRow
+                            label="E-post"
+                            value={profileData.email || 'Ej tillgänglig'}
+                            icon={<Mail className="h-4 w-4" />}
+                        />
+                        <InfoRow
+                            label="Användarnamn"
+                            value={`@${profileData.username}`}
+                            icon={<User className="h-4 w-4" />}
+                        />
+                        <InfoRow
+                            label="Medlem sedan"
+                            value={formatDate(targetUser.created_at || '')}
+                            icon={<Calendar className="h-4 w-4" />}
+                        />
+                        {profileData.lastSignIn && (
+                            <InfoRow
+                                label="Senast aktiv"
+                                value={formatRelativeTime(profileData.lastSignIn)}
+                                icon={<Clock className="h-4 w-4" />}
+                            />
+                        )}
+                    </div>
+                </ProfileCard>
+
+                {/* Patient Contacts (Own Profile Only) */}
+                {isOwnProfile && (
+                    <ProfileCard
+                        title="Senaste patientkontakter"
+                        icon={<Users className="h-5 w-5" />}
+                        gradient="from-green-500/10 to-emerald-500/10"
+                    >
+                        {contactsLoading ? (
+                            <div className="flex items-center justify-center py-8">
+                                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-500"></div>
+                            </div>
+                        ) : patientContacts.length > 0 ? (
+                            <div className="space-y-3 max-h-96 overflow-y-auto">
+                                {patientContacts.map((contact, index) => (
+                                    <PatientContactItem
+                                        key={`${contact.cnumber}-${index}`}
+                                        contact={contact}
+                                        onClick={() => handleContactClick(contact)}
+                                    />
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-gray-600 dark:text-gray-400 text-center py-8">
+                                Inga patientkontakter ännu
+                            </p>
+                        )}
+                    </ProfileCard>
                 )}
 
-                {/* Simplified Welcome Section */}
-                <div className="text-center mb-8 animate-in fade-in duration-700">
-                    <h1 className="text-3xl md:text-4xl font-bold bg-gradient-to-r from-purple-600 via-pink-600 to-indigo-600 bg-clip-text text-transparent mb-4">
-                            Audika Chat
-                        </h1>
-                    <p className="text-lg text-gray-600 dark:text-gray-300">
-                        Welcome back, <span className="font-semibold text-purple-600 dark:text-purple-400">{userDisplayName}</span>! 
-                        Join the conversation below.
-                    </p>
-                </div>
-
-                {/* Main Chat Section */}
-                <div className="grid lg:grid-cols-4 gap-8">
-                    {/* Chat Interface */}
-                    <div className="lg:col-span-3">
-                        <div className="relative overflow-hidden bg-white/60 dark:bg-slate-800/60 backdrop-blur-xl border border-white/20 dark:border-white/10 rounded-3xl shadow-lg group animate-in slide-in-from-bottom-4 duration-700">
-                            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-gradient-to-br from-purple-500/10 to-pink-500/10 transition-opacity duration-500 rounded-3xl" />
-                            
-                            <div className="relative z-10">
-                                {/* Chat Tabs */}
-                                <div className="flex items-center border-b border-white/20 dark:border-white/10 bg-white/20 dark:bg-black/20 rounded-t-3xl overflow-x-auto">
-                                    {chatTabs.map((tab) => (
-                                        <div
-                                            key={tab.id}
-                                            className={`flex items-center gap-2 px-4 py-3 cursor-pointer transition-all duration-300 min-w-0 flex-shrink-0 ${
-                                                tab.isActive
-                                                    ? 'bg-white/40 dark:bg-black/40 border-b-2 border-purple-500'
-                                                    : 'hover:bg-white/20 dark:hover:bg-black/20'
-                                            }`}
-                                            onClick={() => switchTab(tab.id)}
-                                        >
-                                            <div className="flex items-center gap-2 min-w-0">
-                                                {tab.type === 'global' ? (
-                                                    <Globe className="w-4 h-4 text-purple-600 dark:text-purple-400 flex-shrink-0" />
-                                                ) : (
-                                                    <MessageSquare className="w-4 h-4 text-purple-600 dark:text-purple-400 flex-shrink-0" />
-                                                )}
-                                                <span className="text-sm font-medium text-gray-900 dark:text-white truncate">
-                                                    {tab.name}
-                                                </span>
-                                                {tab.unreadCount && tab.unreadCount > 0 && (
-                                                    <span className="bg-red-500 text-white text-xs rounded-full px-2 py-0.5 min-w-[20px] text-center">
-                                                        {tab.unreadCount > 99 ? '99+' : tab.unreadCount}
-                                                    </span>
-                                                )}
-                                            </div>
-                                            {tab.type === 'dm' && (
-                                                <button
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        closeTab(tab.id);
-                                                    }}
-                                                    className="ml-2 p-1 rounded-full hover:bg-white/20 dark:hover:bg-black/20 transition-all duration-300 flex-shrink-0"
-                                                >
-                                                    <X className="w-3 h-3 text-gray-500 dark:text-gray-400" />
-                                                </button>
-                                            )}
-                                        </div>
-                                    ))}
-                                </div>
-
-                                {/* Chat Content - Render separate chat instances for each tab */}
-                                <div className="p-0">
-                                    {chatTabs.map((tab) => (
-                                        <div
-                                            key={tab.id}
-                                            className={tab.isActive ? 'block' : 'hidden'}
-                                        >
-                                            <RealtimeChat 
-                                                roomName={tab.type === 'dm' ? `dm-${tab.username}` : 'global'} 
-                                                username={userDisplayName} 
-                                            />
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Enhanced Sidebar */}
-                    <div className="lg:col-span-1 space-y-6">
-                        {/* Enhanced User Profile Card */}
-                        <div className="relative overflow-hidden bg-white/60 dark:bg-slate-800/60 backdrop-blur-xl border border-white/20 dark:border-white/10 rounded-3xl p-6 shadow-lg group animate-in slide-in-from-right-4 duration-700">
-                            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-gradient-to-br from-purple-500/10 to-indigo-500/10 transition-opacity duration-500 rounded-3xl" />
-                            
-                            <div className="relative z-10">
-                                <div className="flex items-center justify-between mb-4">
-                                    <div className="flex items-center gap-3">
-                                    <div className="p-2 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-md">
-                                        <User className="w-5 h-5" />
-                                        </div>
-                                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Your Profile</h3>
-                                    </div>
-                                    <button 
-                                        onClick={handleSettings}
-                                        className="p-2 rounded-lg bg-white/20 dark:bg-black/20 hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300"
-                                        title="Settings"
-                                    >
-                                        <Settings className="w-4 h-4 text-gray-600 dark:text-gray-400" />
-                                    </button>
-                                </div>
-
-                                {/* Settings Panel (hidden by default) */}
-                                {showSettings && (
-                                    <div className="mt-4 p-4 bg-white/20 dark:bg-black/20 rounded-xl border border-white/20 dark:border-white/10">
-                                        <h4 className="font-semibold text-gray-900 dark:text-white mb-2">Settings</h4>
-                                        <p className="text-sm text-gray-600 dark:text-gray-400">
-                                            Settings panel coming soon! 🚀
-                                        </p>
-                                    </div>
-                                )}
-
-                                <div className="text-center">
-                                    <div className="relative mx-auto w-16 h-16 mb-4">
-                                        <div className="absolute inset-0 bg-gradient-to-br from-purple-400 to-indigo-600 rounded-full blur-lg opacity-50 scale-110 animate-pulse" />
-                                        <Avatar className="relative w-16 h-16 border-2 border-white/50 shadow-lg">
-                                            <AvatarImage 
-                                                src={currentUserSession?.user_metadata?.avatar_url || generateCartoonAvatar(userDisplayName)} 
-                                                alt={userDisplayName} 
-                                            />
-                                            <AvatarFallback className="text-2xl font-bold bg-gradient-to-br from-purple-500 to-indigo-600 text-white">
-                                                {getInitials(userDisplayName)}
-                                            </AvatarFallback>
-                                        </Avatar>
-                                    </div>
-                                    <h4 className="text-xl font-bold text-gray-900 dark:text-white mb-1">{userDisplayName}</h4>
-                                    <p className="text-gray-600 dark:text-gray-400 text-sm mb-3">Active user</p>
-                                    <div className="flex items-center justify-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-400 animate-pulse' : 'bg-gray-400'}`}></div>
-                                        <span className={`text-xs font-medium ${isOnline ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'}`}>
-                                            {isOnline ? 'Online' : 'Offline'}
-                                        </span>
-                                    </div>
-                                </div>
-                            </div>
+                {/* Settings (Own Profile Only) */}
+                {isOwnProfile && (
+                    <ProfileCard
+                        title="Inställningar"
+                        icon={<SettingsIcon className="h-5 w-5" />}
+                        gradient="from-orange-500/10 to-red-500/10"
+                        className="lg:col-span-2"
+                    >
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <InfoRow
+                                label="Profil synlighet"
+                                value={profileData.settings.profileVisibility === 'public' ? 'Offentlig' : 'Privat'}
+                                icon={<Shield className="h-4 w-4" />}
+                            />
+                            <InfoRow
+                                label="Mörkt tema"
+                                value={profileData.settings.darkMode ? 'Påslaget' : 'Avslaget'}
+                                icon={<Activity className="h-4 w-4" />}
+                            />
+                            <InfoRow
+                                label="E-postnotiser"
+                                value={profileData.settings.emailNotifications ? 'Påslaget' : 'Avslaget'}
+                                icon={<Bell className="h-4 w-4" />}
+                            />
                         </div>
 
-                        {/* Extended Online Users Card */}
-                        <div className="relative overflow-hidden bg-white/60 dark:bg-slate-800/60 backdrop-blur-xl border border-white/20 dark:border-white/10 rounded-3xl p-6 shadow-lg group animate-in slide-in-from-right-4 duration-700" style={{ animationDelay: '200ms' }}>
-                            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 bg-gradient-to-br from-green-500/10 to-emerald-500/10 transition-opacity duration-500 rounded-3xl" />
-                            
-                            <div className="relative z-10">
-                                <div className="flex items-center justify-between mb-4">
-                                    <div className="flex items-center gap-3">
-                                    <div className="p-2 rounded-xl bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-md">
-                                        <Users className="w-5 h-5" />
-                                        </div>
-                                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Online Users</h3>
-                                    </div>
-                                    <div className="flex items-center gap-1 px-2 py-1 bg-green-100/80 dark:bg-green-900/30 rounded-full">
-                                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                                        <span className="text-xs text-green-700 dark:text-green-400 font-medium">{onlineUsers.length}</span>
-                                        </div>
-                                    </div>
-                                    
-                                <div className="space-y-3 max-h-96 overflow-y-auto">
-                                    {onlineUsers.length === 0 ? (
-                                        <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                                            <Users className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                                            <p className="text-sm">No users online</p>
-                                        </div>
-                                    ) : (
-                                        onlineUsers.map((user) => {
-                                            const displayName = user.metadata.displayName || user.metadata.username;
-                                            
-                                            // Check if this is the current user
-                                            const isCurrentUser = currentUserSession && 
-                                                currentUserSession.email?.split('@')[0]?.toUpperCase() === user.metadata.username;
-                                            
-                                            // Use session data for current user's avatar, otherwise use presence data
-                                            const avatarName = isCurrentUser ? 
-                                                (currentUserSession.user_metadata?.display_name || currentUserSession.user_metadata?.full_name || user.metadata.username) :
-                                                displayName;
-                                            
-                                            return (
-                                                <div 
-                                                    key={user.id} 
-                                                    className="flex items-center gap-3 p-3 rounded-xl bg-white/20 dark:bg-black/20 hover:bg-white/30 dark:hover:bg-black/30 transition-all duration-300 cursor-pointer group/user"
-                                                    onClick={() => startDM(user)}
-                                                >
-                                                    <div className="relative">
-                                                        <Avatar className="w-10 h-10 ring-2 ring-white/40 dark:ring-slate-600/40">
-                                                            {user.metadata.avatarUrl ? (
-                                                                <AvatarImage src={user.metadata.avatarUrl} alt={displayName} />
-                                                            ) : (
-                                                                <AvatarImage src={generateCartoonAvatar(avatarName)} alt={displayName} />
-                                                            )}
-                                                            <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-500 text-white text-sm font-medium">
-                                                                {getInitials(displayName)}
-                                                            </AvatarFallback>
-                                                        </Avatar>
-                                                        <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-400 rounded-full border-2 border-white"></div>
-                                                    </div>
-                                                    <div className="flex-1 min-w-0">
-                                                        <p className="font-medium text-gray-900 dark:text-white text-sm truncate">
-                                                            {displayName}
-                                                        </p>
-                                                        <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                            {user.metadata.lastActive === 'now' ? 'Active now' : `Active ${formatRelativeTime(user.metadata.lastActive)}`}
-                                                        </p>
-                                                    </div>
-                                                    <button className="opacity-0 group-hover/user:opacity-100 p-2 rounded-lg bg-purple-100/80 dark:bg-purple-900/30 hover:bg-purple-200/80 dark:hover:bg-purple-800/30 transition-all duration-300">
-                                                        <MessageSquare className="w-4 h-4 text-purple-600 dark:text-purple-400" />
-                                                    </button>
-                                                </div>
-                                            );
-                                        })
-                                    )}
-                                </div>
-
-                                {/* Quick Actions Footer */}
-                                <div className="mt-4 pt-4 border-t border-white/20 dark:border-white/10">
-                                    <div className="flex items-center justify-between">
-                                        <span className="text-xs text-gray-500 dark:text-gray-400">
-                                            Click a user to start a DM
-                                        </span>
-                                        <button 
-                                            onClick={handleViewAll}
-                                            className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-700 dark:hover:text-purple-300 transition-colors duration-300"
-                                        >
-                                            View All
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {/* View All Users Panel (hidden by default) */}
-                                {showAllUsers && (
-                                    <div className="mt-4 p-4 bg-white/20 dark:bg-black/20 rounded-xl border border-white/20 dark:border-white/10">
-                                        <h4 className="font-semibold text-gray-900 dark:text-white mb-2">All Online Users</h4>
-                                        <p className="text-sm text-gray-600 dark:text-gray-400">
-                                            Expanded users view coming soon! 👥
-                                        </p>
-                                    </div>
-                                )}
+                        {!isEditingSettings && (
+                            <div className="mt-4">
+                                <Button
+                                    onClick={() => setIsEditingSettings(true)}
+                                    variant="outline"
+                                    className="w-full"
+                                >
+                                    <Edit3 className="h-4 w-4 mr-2" />
+                                    Redigera inställningar
+                                </Button>
                             </div>
-                        </div>
-                    </div>
-                </div>
+                        )}
+                    </ProfileCard>
+                )}
             </div>
+
+            {/* Edit Bio Modal */}
+            <AnimatePresence>
+                {isEditingBio && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) {
+                                handleCloseEditBio();
+                            }
+                        }}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.9, opacity: 0 }}
+                            className="bg-white dark:bg-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl"
+                        >
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                    Redigera profil
+                                </h3>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={handleCloseEditBio}
+                                    className="p-2"
+                                >
+                                    <X className="h-4 w-4" />
+                                </Button>
+                            </div>
+
+                            {saveError && <ErrorAlert message={saveError} />}
+
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                        Visningsnamn
+                                    </label>
+                                    <Input
+                                        value={editState.displayName}
+                                        onChange={(e) => setEditState(prev => ({ ...prev, displayName: e.target.value }))}
+                                        placeholder="Ditt visningsnamn"
+                                        maxLength={50}
+                                    />
+                                </div>
+
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                                        Biografi
+                                    </label>
+                                    <Textarea
+                                        value={editState.bio}
+                                        onChange={(e) => setEditState(prev => ({ ...prev, bio: e.target.value }))}
+                                        placeholder="Berätta något om dig själv..."
+                                        rows={4}
+                                        maxLength={500}
+                                    />
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        {editState.bio.length}/500 tecken
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex gap-3 mt-6">
+                                <Button
+                                    onClick={handleCloseEditBio}
+                                    variant="outline"
+                                    className="flex-1"
+                                    disabled={isSaving}
+                                >
+                                    Avbryt
+                                </Button>
+                                <Button
+                                    onClick={saveProfile}
+                                    className="flex-1"
+                                    disabled={isSaving}
+                                >
+                                    {isSaving ? (
+                                        <>
+                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+                                            Sparar...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Save className="h-4 w-4 mr-2" />
+                                            Spara
+                                        </>
+                                    )}
+                                </Button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Edit Settings Modal */}
+            <AnimatePresence>
+                {isEditingSettings && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) {
+                                handleCloseEditSettings();
+                            }
+                        }}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.9, opacity: 0 }}
+                            className="bg-white dark:bg-slate-800 rounded-2xl p-6 w-full max-w-md shadow-2xl"
+                        >
+                            <div className="flex items-center justify-between mb-4">
+                                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                    Redigera inställningar
+                                </h3>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={handleCloseEditSettings}
+                                    className="p-2"
+                                >
+                                    <X className="h-4 w-4" />
+                                </Button>
+                            </div>
+
+                            {saveError && <ErrorAlert message={saveError} />}
+
+                            <div className="space-y-6">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+                                        Profil synlighet
+                                    </label>
+                                    <div className="space-y-2">
+                                        <label className="flex items-center">
+                                            <input
+                                                type="radio"
+                                                name="visibility"
+                                                value="public"
+                                                checked={editState.settings.profileVisibility === 'public'}
+                                                onChange={(e) => setEditState(prev => ({
+                                                    ...prev,
+                                                    settings: { ...prev.settings, profileVisibility: e.target.value }
+                                                }))}
+                                                className="mr-2"
+                                            />
+                                            <span className="text-sm text-gray-700 dark:text-gray-300">Offentlig</span>
+                                        </label>
+                                        <label className="flex items-center">
+                                            <input
+                                                type="radio"
+                                                name="visibility"
+                                                value="private"
+                                                checked={editState.settings.profileVisibility === 'private'}
+                                                onChange={(e) => setEditState(prev => ({
+                                                    ...prev,
+                                                    settings: { ...prev.settings, profileVisibility: e.target.value }
+                                                }))}
+                                                className="mr-2"
+                                            />
+                                            <span className="text-sm text-gray-700 dark:text-gray-300">Privat</span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label className="flex items-center">
+                                        <input
+                                            type="checkbox"
+                                            checked={editState.settings.darkMode}
+                                            onChange={(e) => setEditState(prev => ({
+                                                ...prev,
+                                                settings: { ...prev.settings, darkMode: e.target.checked }
+                                            }))}
+                                            className="mr-3"
+                                        />
+                                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Aktivera mörkt tema
+                    </span>
+                                    </label>
+                                </div>
+
+                                <div>
+                                    <label className="flex items-center">
+                                        <input
+                                            type="checkbox"
+                                            checked={editState.settings.emailNotifications}
+                                            onChange={(e) => setEditState(prev => ({
+                                                ...prev,
+                                                settings: { ...prev.settings, emailNotifications: e.target.checked }
+                                            }))}
+                                            className="mr-3"
+                                        />
+                                        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Aktivera e-postnotifikationer
+                    </span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div className="flex gap-3 mt-6">
+                                <Button
+                                    onClick={handleCloseEditSettings}
+                                    variant="outline"
+                                    className="flex-1"
+                                    disabled={isSaving}
+                                >
+                                    Avbryt
+                                </Button>
+                                <Button
+                                    onClick={saveSettings}
+                                    className="flex-1"
+                                    disabled={isSaving}
+                                >
+                                    {isSaving ? (
+                                        <>
+                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+                                            Sparar...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Save className="h-4 w-4 mr-2" />
+                                            Spara
+                                        </>
+                                    )}
+                                </Button>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div>
     );
 }

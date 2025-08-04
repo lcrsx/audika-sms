@@ -282,8 +282,8 @@ export function useRealtimeChat({ roomName, username }: UseRealtimeChatProps) {
     await sendTypingIndicator()
 
     // Set timeout to stop typing indicator
-    typingTimeoutRef.current = setTimeout(async () => {
-      await sendStopTypingIndicator()
+    typingTimeoutRef.current = setTimeout(() => {
+      sendStopTypingIndicator().catch(console.error)
     }, 3000)
   }, [channel, isConnected, sendTypingIndicator, sendStopTypingIndicator])
 

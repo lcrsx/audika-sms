@@ -37,6 +37,13 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { APP_CONFIG, UI_MESSAGES } from '@/lib/config/constants';
+import { generateSecurePatientId } from '@/lib/utils/id-generator';
+import { logger } from '@/lib/utils/logger';
+// import { checkAtomicPatientCreationRateLimit } from '@/lib/utils/atomic-rate-limiter';
+import { sanitizeSearchQuery, createLikePattern } from '@/lib/utils/search-sanitizer';
+import { validateUserCreationData } from '@/lib/utils/user-validation';
+import { createSafeTextContent, validateTextContent } from '@/lib/utils/text-renderer';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -86,8 +93,12 @@ interface Message {
   sender_display_name: string;
   patients?: {
     cnumber: string;
+  }[] | {
+    cnumber: string;
   } | null;
   message_templates?: {
+    name: string;
+  }[] | {
     name: string;
   } | null;
 }
@@ -443,7 +454,9 @@ function RecentMessageItem({ message }: { message: Message }) {
             <div className="flex items-center gap-2">
               <Users className="w-4 h-4 text-gray-400" />
               <span className="text-gray-900 dark:text-white font-bold">Patient:</span>
-              <span className="text-gray-700 dark:text-gray-300 font-medium">{message.patients.cnumber}</span>
+              <span className="text-gray-700 dark:text-gray-300 font-medium">
+                {Array.isArray(message.patients) ? message.patients[0]?.cnumber : message.patients?.cnumber}
+              </span>
             </div>
           )}
         </div>
@@ -453,7 +466,7 @@ function RecentMessageItem({ message }: { message: Message }) {
           <p className={`text-sm text-gray-700 dark:text-gray-300 leading-relaxed bg-gray-50/50 dark:bg-gray-800/50 rounded-xl p-3 ${
             isLongMessage && !showFullContent ? 'line-clamp-3' : ''
           }`}>
-            {message.content}
+            {createSafeTextContent(message.content, true)}
           </p>
           {isLongMessage && (
             <Button
@@ -482,7 +495,9 @@ function RecentMessageItem({ message }: { message: Message }) {
           <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 bg-blue-50/50 dark:bg-blue-900/20 rounded-lg p-2">
             <FileText className="w-3 h-3" />
             <span className="font-medium">Mall:</span>
-            <span className="font-bold text-blue-600 dark:text-blue-400">{message.message_templates.name}</span>
+            <span className="font-bold text-blue-600 dark:text-blue-400">
+              {Array.isArray(message.message_templates) ? message.message_templates[0]?.name : message.message_templates?.name}
+            </span>
           </div>
         )}
       </div>
@@ -562,24 +577,33 @@ export default function FixedSMSPage() {
         const username = user.email?.split('@')[0]?.toUpperCase() || 'USER';
         
         // Check if user exists in public.users
-        const { data: existingUser, error: userError } = await supabase
+        const { data: userData, error: userError } = await supabase
           .from('users')
           .select('*')
           .eq('id', user.id)
           .single();
 
+        let existingUser = userData;
+
         if (userError && userError.code === 'PGRST116') {
-          // User doesn't exist, create them
+          // Validate user data before creation
+          const userValidation = validateUserCreationData(
+            user.id,
+            user.email,
+            username,
+            user.user_metadata
+          );
+          
+          if (!userValidation.isValid) {
+            console.error('User validation failed:', userValidation.errors);
+            setError('Ogiltiga användaruppgifter: ' + userValidation.errors.join(', '));
+            return;
+          }
+          
+          // User doesn't exist, create them with validated data
           const { data: newUser, error: createError } = await supabase
             .from('users')
-            .insert({
-              id: user.id,
-              email: user.email || '',
-              username: username,
-              display_name: user.user_metadata?.display_name || username,
-              role: 'user',
-              is_active: true
-            })
+            .upsert(userValidation.data!)
             .select()
             .single();
 
@@ -602,19 +626,32 @@ export default function FixedSMSPage() {
         setError('Kunde inte ladda användare');
       }
     };
-    loadUser();
+    loadUser().catch((error) => {
+      logger.error('Critical error loading user', error as Error);
+      setError('Kunde inte ladda användarinformation');
+      router.push('/auth/login');
+    });
   }, [router]);
 
   // Enhanced patient search with proper joins
   const searchPatients = useCallback(async (query: string) => {
-    if (!query.trim() || query.length < 2) {
+    if (!query.trim() || query.length < APP_CONFIG.PATIENT_SEARCH_MIN_LENGTH) {
       setPatients([]);
       return;
     }
 
     setIsSearching(true);
     try {
+      // Sanitize search query to prevent SQL injection
+      const searchValidation = sanitizeSearchQuery(query);
+      if (!searchValidation.isValid) {
+        console.error('Invalid search query:', searchValidation.errors);
+        setIsSearching(false);
+        return;
+      }
+
       const supabase = createClient();
+      const safePattern = createLikePattern(searchValidation.sanitized, 'contains');
       
       // First try with joins
       const { data, error } = await supabase
@@ -634,7 +671,7 @@ export default function FixedSMSPage() {
             patient_id
           )
         `)
-        .or(`cnumber.ilike.%${query}%`)
+        .ilike('cnumber', safePattern)
         .eq('is_active', true)
         .order('last_contact_at', { ascending: false })
         .limit(8);
@@ -646,7 +683,7 @@ export default function FixedSMSPage() {
         const { data: fallbackData, error: fallbackError } = await supabase
           .from('patients')
           .select('*')
-          .or(`cnumber.ilike.%${query}%`)
+          .ilike('cnumber', safePattern)
           .eq('is_active', true)
           .order('last_contact_at', { ascending: false })
           .limit(8);
@@ -654,22 +691,41 @@ export default function FixedSMSPage() {
         if (fallbackError) throw fallbackError;
         
         // Manually fetch phones for each patient
-        const patientsWithPhones = await Promise.all(
+        const patientsWithPhones = await Promise.allSettled(
           (fallbackData || []).map(async (patient) => {
-            const { data: phones } = await supabase
-              .from('patient_phones')
-              .select('*')
-              .eq('patient_id', patient.id)
-              .limit(3);
-            
-            return {
-              ...patient,
-              patient_phones: phones || []
-            };
+            try {
+              const { data: phones, error: phoneError } = await supabase
+                .from('patient_phones')
+                .select('*')
+                .eq('patient_id', patient.id)
+                .limit(3);
+              
+              if (phoneError) {
+                logger.warn('Failed to fetch phones for patient', { metadata: { patientId: patient.id, error: phoneError } });
+              }
+              
+              return {
+                ...patient,
+                patient_phones: phones || []
+              };
+            } catch (patientError) {
+              logger.error('Error processing patient in search', patientError as Error, { metadata: { patientId: patient.id } });
+              // Return patient without phones if phone fetch fails
+              return {
+                ...patient,
+                patient_phones: []
+              };
+            }
           })
         );
         
-        setPatients(patientsWithPhones);
+        // Extract successful results from Promise.allSettled
+        type PatientWithPhones = typeof fallbackData[0] & { patient_phones: unknown[] };
+        const successfulPatients = patientsWithPhones
+          .filter((result): result is PromiseFulfilledResult<PatientWithPhones> => result.status === 'fulfilled')
+          .map(result => result.value);
+        
+        setPatients(successfulPatients);
       } else {
         setPatients(data || []);
       }
@@ -766,7 +822,15 @@ const sendMessage = async () => {
     return;
   }
 
-  console.log('🚀 Sending SMS via server action only');
+  // Validate message content for XSS and malicious content
+  const messageValidation = validateTextContent(message);
+  if (!messageValidation.isValid) {
+    setError('Meddelandet innehåller otillåtet innehåll: ' + messageValidation.errors.join(', '));
+    logger.security('Malicious message content detected', { metadata: { errors: messageValidation.errors } });
+    return;
+  }
+
+  logger.sms('Sending', { phone: phoneNumber });
 
   setIsSending(true);
   setError(null);
@@ -779,11 +843,24 @@ const sendMessage = async () => {
     let createdNewPatient = false;
 
     if (!selectedPatient) {
-      console.log('🆕 Creating auto-patient for phone:', phoneNumber);
+      logger.debug('Creating auto-patient for phone', { metadata: { phone: phoneNumber } });
+      
+      // Rate limiting temporarily disabled - re-enable after database migration is complete
+      // if (currentUser) {
+      //   const rateLimitResult = await checkAtomicPatientCreationRateLimit(currentUser.id);
+      //   if (!rateLimitResult.allowed) {
+      //     const waitTime = rateLimitResult.retryAfter || 300;
+      //     logger.security('Patient creation rate limit exceeded', { 
+      //       userId: currentUser.id,
+      //       metadata: { remaining: rateLimitResult.remaining }
+      //     });
+      //     setError(`För många nya patienter skapade. Försök igen om ${Math.ceil(waitTime / 60)} minuter.`);
+      //     return;
+      //   }
+      // }
       
       const supabase = createClient();
-      const phoneDigits = phoneNumber.replace(/\D/g, '');
-      const autoPatientCNumber = `C${phoneDigits.slice(-8)}`;
+      const autoPatientCNumber = generateSecurePatientId(phoneNumber);
       
       // Check if auto-patient already exists
       const { data: existingPatient } = await supabase
@@ -835,8 +912,9 @@ const sendMessage = async () => {
 
     // Now ONLY call the server action - it handles SMS + message saving
     console.log('📱 Calling server action sendSingleSMS...');
+    // Use the sanitized message content
     const result = await sendSingleSMS(
-      message.trim(),
+      messageValidation.sanitized,
       phoneNumber.trim(),
       patientCNumber
     );
@@ -865,7 +943,12 @@ const sendMessage = async () => {
     }
 
     // Reload messages
-    await loadRecentMessages();
+    try {
+      await loadRecentMessages();
+    } catch (reloadError) {
+      logger.warn('Failed to reload messages after sending SMS', { metadata: { error: reloadError } });
+      // Don't fail the entire operation if reload fails
+    }
 
     // Clear success after 7 seconds
     setTimeout(() => {
@@ -875,7 +958,7 @@ const sendMessage = async () => {
 
   } catch (error) {
     console.error('❌ Error in message sending process:', error);
-    setError(error instanceof Error ? error.message : 'Ett oväntat fel inträffade');
+    setError(error instanceof Error ? error.message : UI_MESSAGES.ERRORS.GENERIC);
   } finally {
     setIsSending(false);
   }
@@ -1095,6 +1178,16 @@ const sendMessage = async () => {
               >
                 <Users className="w-5 h-5" />
                 Patienter
+              </motion.button>
+
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => router.push(`/${dbUser.username.toLowerCase()}`)}
+                className="bg-gradient-to-r from-green-500 to-emerald-600 text-white px-8 py-4 rounded-2xl font-bold shadow-lg hover:shadow-xl transition-all duration-300 flex items-center gap-2"
+              >
+                <User className="w-5 h-5" />
+                Min Profil
               </motion.button>
             </div>
           </motion.div>
@@ -1421,7 +1514,7 @@ const sendMessage = async () => {
                   <Filter className="w-5 h-5 text-gray-500" />
                   <select
                     value={messageFilter}
-                    onChange={(e) => setMessageFilter(e.target.value)}
+                    onChange={(e) => setMessageFilter(e.target.value as 'all' | 'sent' | 'delivered' | 'failed')}
                     className="flex-1 text-sm bg-white/70 dark:bg-slate-600/70 border border-white/30 dark:border-white/20 rounded-xl px-3 py-2 focus:ring-2 focus:ring-purple-500 transition-all duration-300"
                   >
                     <option value="all">Alla meddelanden</option>

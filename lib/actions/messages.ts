@@ -5,10 +5,16 @@ import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import { sendSMSWithFallback } from '@/lib/services/infobip-sms'
 import { validateAndNormalize } from '@/lib/actions/swe-format'
-import { Database } from '@/types/supabase'
+import { Database } from '@/database.types'
+import { sanitizePhoneNumber } from '@/lib/utils/sanitize';
+import { validateSMSContent, validateHealthcareSMS } from '@/lib/utils/enhanced-sms-validator';
+import { logger } from '@/lib/utils/logger';
+// import { checkAtomicSMSRateLimit } from '@/lib/utils/atomic-rate-limiter';
 
-// Define types for messages
-type Message = Database['public']['Tables']['messages']['Row']
+// Define types for messages with optional sender_display_name for backwards compatibility
+type Message = Omit<Database['public']['Tables']['messages']['Row'], 'sender_display_name'> & {
+  sender_display_name?: string
+}
 type MessageWithPatient = Message & {
   patients: {
     cnumber: string
@@ -34,19 +40,46 @@ messageId?: string;
 error?: string;
 }> {
 try {
-  console.log('📱 SMS Request:', { content: content.substring(0, 50), recipientPhone, patientCnumber });
+  logger.sms('Request', { content, phone: recipientPhone, patientCnumber });
 
-  // Validate inputs
-  if (!content || content.trim().length === 0) {
-    throw new Error('Meddelande kan inte vara tomt')
+  // Enhanced SMS content validation
+  const contentValidation = validateSMSContent(content);
+  if (!contentValidation.isValid) {
+    logger.security('Invalid SMS content detected', { 
+      metadata: { 
+        errors: contentValidation.errors,
+        warnings: contentValidation.warnings
+      } 
+    });
+    throw new Error(contentValidation.errors.join(', '));
   }
+  
+  // Healthcare compliance check for medical context
+  const healthcareValidation = validateHealthcareSMS(content);
+  if (!healthcareValidation.isCompliant) {
+    logger.security('Healthcare SMS compliance violation', {
+      metadata: { violations: healthcareValidation.violations }
+    });
+    throw new Error('SMS innehåller känslig medicinsk information: ' + healthcareValidation.violations.join(', '));
+  }
+  
+  // Log warnings for monitoring
+  if (contentValidation.warnings.length > 0) {
+    logger.warn('SMS validation warnings', {
+      metadata: { 
+        warnings: contentValidation.warnings,
+        segments: contentValidation.metadata.segments,
+        cost: contentValidation.metadata.estimatedCost
+      }
+    });
+  }
+  
+  const sanitizedContent = contentValidation.sanitized;
 
-  if (content.length > 1600) {
-    throw new Error('Meddelandet är för långt (max 1600 tecken)')
-  }
+  const sanitizedPhone = sanitizePhoneNumber(recipientPhone);
 
   // Validate phone number
-  const phoneValidation = validateAndNormalize(recipientPhone)
+  const phoneValidation = validateAndNormalize(sanitizedPhone)
   if (!phoneValidation.isValid) {
     throw new Error(phoneValidation.error || 'Ogiltigt telefonnummer')
   }
@@ -57,6 +90,21 @@ try {
   if (userError || !user) {
     throw new Error('Användaren är inte autentiserad')
   }
+
+
+  // Rate limiting temporarily disabled - re-enable after database migration is complete
+  // const rateLimitResult = await checkAtomicSMSRateLimit(user.id);
+  // if (!rateLimitResult.allowed) {
+  //   const waitTime = rateLimitResult.retryAfter || 60;
+  //   logger.security('SMS rate limit exceeded', { 
+  //     userId: user.id, 
+  //     metadata: { 
+  //       remaining: rateLimitResult.remaining, 
+  //       resetTime: rateLimitResult.resetTime 
+  //     } 
+  //   });
+  //   throw new Error(`För många SMS-förfrågningar. Försök igen om ${waitTime} sekunder.`);
+  // }
 
   // Get user from public.users table
   const { data: dbUser, error: dbUserError } = await supabase
@@ -71,14 +119,12 @@ try {
 
   const normalizedPhone = phoneValidation.normalized!;
   const senderTag = dbUser.username;
-  const senderDisplayName = dbUser.display_name || dbUser.username;
-
-  console.log('✅ Validation passed:', { normalizedPhone, senderTag });
+  logger.debug('Validation passed', { metadata: { normalizedPhone, senderTag } });
 
   // Send SMS using your service
-  console.log('🚀 Sending SMS...');
+  logger.sms('Sending', { phone: normalizedPhone });
   const result = await sendSMSWithFallback({
-    content: content.trim(),
+    content: sanitizedContent,
     recipientPhone: normalizedPhone,
     patientCnumber: patientCnumber || normalizedPhone,
     senderId: user.id,
@@ -89,11 +135,11 @@ try {
   // No need to save again here
 
   if (!result.success) {
-    console.error('❌ SMS sending failed:', result.error);
+    logger.error('SMS sending failed', new Error(result.error || 'Unknown error'), { metadata: { messageId: result.messageId } });
     throw new Error(result.error || 'Kunde inte skicka SMS')
   }
 
-  console.log('✅ SMS sent successfully:', result.messageId);
+  logger.sms('Sent successfully', { messageId: result.messageId });
 
   // Update patient last contact time if real patient
   if (patientCnumber && patientCnumber.startsWith('C')) {
@@ -103,7 +149,7 @@ try {
         .update({ last_contact_at: new Date().toISOString() })
         .eq('cnumber', patientCnumber);
     } catch (updateError) {
-      console.error('⚠️ Could not update patient:', updateError);
+      logger.warn('Could not update patient last contact', { metadata: { error: updateError, patientCnumber } });
       // Don't fail SMS if patient update fails
     }
   }
@@ -116,7 +162,7 @@ try {
       revalidatePath(`/patients/${patientCnumber}`)
     }
   } catch (revalidateError) {
-    console.error('⚠️ Revalidation error:', revalidateError);
+    logger.warn('Revalidation error', { metadata: { error: revalidateError } });
   }
 
   return {
@@ -124,11 +170,11 @@ try {
     messageId: result.messageId
   }
 
-} catch (error: any) {
-  console.error('❌ SMS Action Error:', error);
+} catch (error: unknown) {
+  logger.error('SMS Action Error', error as Error);
   return {
     success: false,
-    error: error?.message || 'Ett oväntat fel inträffade'
+    error: (error as Error)?.message || 'Ett oväntat fel inträffade'
   }
 }
 }
@@ -168,7 +214,7 @@ export async function getPatientMessages(patientCnumber: string): Promise<{
       messages: messages || []
     }
   } catch (error) {
-    console.error('Error getting patient messages:', error)
+    logger.error('Error getting patient messages', error as Error, { metadata: { patientCnumber } });
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Ett okänt fel inträffade'
@@ -208,11 +254,11 @@ export async function getUserRecentMessages(limit: number = 10): Promise<{
 
     // If no messages found by sender_id, try by sender_tag as fallback
     if (!messages || messages.length === 0) {
-      console.log('No messages found by sender_id, trying sender_tag...');
+      logger.debug('No messages found by sender_id, trying sender_tag', { userId: user.id, metadata: { senderTag } });
       const { data: messagesByTag, error: messagesByTagError } = await supabase
           .from('messages')
           .select('*, patients(cnumber)')
-          .eq('sender_tag', senderTag)
+          .eq('sender_tag', senderTag ?? '')
           .order('created_at', { ascending: false })
           .limit(limit)
 
@@ -231,7 +277,7 @@ export async function getUserRecentMessages(limit: number = 10): Promise<{
       messages: messages || []
     }
   } catch (error) {
-    console.error('Error getting user recent messages:', error)
+    logger.error('Error getting user recent messages', error as Error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Ett okänt fel inträffade'
@@ -274,7 +320,7 @@ export async function getAllRecentMessages(limit: number = 20): Promise<{
       messages: messages || []
     }
   } catch (error) {
-    console.error('Error getting all recent messages:', error)
+    logger.error('Error getting all recent messages', error as Error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Ett okänt fel inträffade'
@@ -341,7 +387,7 @@ export async function getMessageStats(): Promise<{
       supabase
           .from('messages')
           .select('id', { count: 'exact' })
-          .eq('sender_tag', senderTag)
+          .eq('sender_tag', senderTag ?? '')
           .gte('created_at', today.toISOString())
     ])
 
@@ -363,7 +409,7 @@ export async function getMessageStats(): Promise<{
       }
     }
   } catch (error) {
-    console.error('Error getting message stats:', error)
+    logger.error('Error getting message stats', error as Error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Ett okänt fel inträffade'
