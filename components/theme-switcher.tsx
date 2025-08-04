@@ -1,78 +1,57 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Laptop, Moon, Sun } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
-const ThemeSwitcher = () => {
-  const [mounted, setMounted] = useState(false);
-  const { theme, setTheme } = useTheme();
+export const ThemeSwitcher = () => {
+    const [mounted, setMounted] = useState(false);
+    const { theme, setTheme, resolvedTheme } = useTheme();
 
-  // useEffect only runs on the client, so now we can safely show the UI
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+    useEffect(() => {
+        setMounted(true);
+    }, []);
 
-  if (!mounted) {
-    return null;
-  }
+    if (!mounted) {
+        return (
+            <div className="h-8 w-8 rounded-lg bg-transparent animate-pulse" />
+        );
+    }
 
-  const ICON_SIZE = 16;
+    const isDark = (resolvedTheme ?? theme) === "dark";
+    const nextTheme = isDark ? "light" : "dark";
 
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size={"sm"}>
-          {theme === "light" ? (
-            <Sun
-              key="light"
-              size={ICON_SIZE}
-              className={"text-muted-foreground"}
-            />
-          ) : theme === "dark" ? (
-            <Moon
-              key="dark"
-              size={ICON_SIZE}
-              className={"text-muted-foreground"}
-            />
-          ) : (
-            <Laptop
-              key="system"
-              size={ICON_SIZE}
-              className={"text-muted-foreground"}
-            />
-          )}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-content" align="start">
-        <DropdownMenuRadioGroup
-          value={theme}
-          onValueChange={(e) => setTheme(e)}
+    return (
+        <button
+            onClick={() => setTheme(nextTheme)}
+            aria-label={`Switch to ${nextTheme} mode`}
+            className="
+                h-8 w-8 rounded-lg
+                text-gray-600 dark:text-slate-400
+                hover:text-gray-800 dark:hover:text-slate-200
+                hover:bg-gray-100/50 dark:hover:bg-slate-700/30
+                transition-all duration-200 ease-out
+                hover:scale-110 active:scale-95
+                focus:outline-none focus:ring-2 focus:ring-blue-500/20
+                flex items-center justify-center
+            "
         >
-          <DropdownMenuRadioItem className="flex gap-2" value="light">
-            <Sun size={ICON_SIZE} className="text-muted-foreground" />{" "}
-            <span>Light</span>
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem className="flex gap-2" value="dark">
-            <Moon size={ICON_SIZE} className="text-muted-foreground" />{" "}
-            <span>Dark</span>
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem className="flex gap-2" value="system">
-            <Laptop size={ICON_SIZE} className="text-muted-foreground" />{" "}
-            <span>System</span>
-          </DropdownMenuRadioItem>
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+            <AnimatePresence mode="wait">
+                <motion.div
+                    key={isDark ? "moon" : "sun"}
+                    initial={{ opacity: 0, rotate: isDark ? -30 : 30, scale: 0.9 }}
+                    animate={{ opacity: 1, rotate: 0, scale: 1 }}
+                    exit={{ opacity: 0, rotate: isDark ? 30 : -30, scale: 0.9 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                >
+                    {isDark ? (
+                        <Moon size={16} />
+                    ) : (
+                        <Sun size={16} />
+                    )}
+                </motion.div>
+            </AnimatePresence>
+        </button>
+    );
 };
-
-export { ThemeSwitcher };
