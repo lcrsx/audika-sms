@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 import { Footer } from "@/components/footer";
 import { Header } from "@/components/header";
 import ErrorBoundary from "@/components/error-boundary";
+import { QueryProvider } from "@/lib/providers/query-provider";
 import "./globals.css";
 import React from "react";
 
@@ -31,12 +32,13 @@ export default function RootLayout({
     return (
         <html lang="en" suppressHydrationWarning>
         <body className={`${geistSans.className} antialiased`}>
-        <ThemeProvider
-            attribute="class"
-            defaultTheme="system"
-            enableSystem
-            disableTransitionOnChange
-        >
+        <QueryProvider>
+            <ThemeProvider
+                attribute="class"
+                defaultTheme="system"
+                enableSystem
+                disableTransitionOnChange
+            >
             <div className="
             flex flex-col min-h-screen relative overflow-hidden
             bg-gradient-to-br from-gray-50 via-blue-50/50 to-slate-100/80
@@ -96,7 +98,8 @@ export default function RootLayout({
                     </div>
                 </div>
             </div>
-        </ThemeProvider>
+            </ThemeProvider>
+        </QueryProvider>
         </body>
         </html>
     );

@@ -10,7 +10,8 @@
       "Bash(npx supabase:*)",
       "Bash(export PGPASSWORD=\"xxrde$p#hSyH!z5JBcR$4shgz7QHPs\")",
       "Bash(export PGPASSWORD='xxrde$p#hSyH!z5JBcR$4shgz7QHPs')",
-      "Bash(export PGPASSWORD=\"jam-punctual-kept-ecologist-chance\")"
+      "Bash(export PGPASSWORD=\"jam-punctual-kept-ecologist-chance\")",
+      "Bash(npm install:*)"
     ],
     "deny": []
   }
