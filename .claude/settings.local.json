@@ -27,7 +27,8 @@
       "Bash(mkdir:*)",
       "Bash(npx tsc:*)",
       "Bash(docker build:*)",
-      "Bash(npm run docker:build:*)"
+      "Bash(npm run docker:build:*)",
+      "Bash(git commit:*)"
     ],
     "deny": []
   }
