@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// Audika SMS Installation Wizard
+
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -260,4 +262,9 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  console.error('\n💥 Installation failed with error:');
+  console.error(error.message || error);
+  console.error('\nPlease check the error above and try again.');
+  process.exit(1);
+});

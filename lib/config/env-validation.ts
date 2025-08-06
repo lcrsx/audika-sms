@@ -5,7 +5,7 @@
 
 interface RequiredEnvVars {
   NEXT_PUBLIC_SUPABASE_URL: string;
-  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_OR_ANON_KEY: string;
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: string;
   INFOBIP_BASE_URL: string;
   INFOBIP_API_KEY: string;
   INFOBIP_SENDER_ID: string;
@@ -21,7 +21,7 @@ interface OptionalEnvVars {
 
 const requiredEnvVars: (keyof RequiredEnvVars)[] = [
   'NEXT_PUBLIC_SUPABASE_URL',
-  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_OR_ANON_KEY',
+  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
   'INFOBIP_BASE_URL',
   'INFOBIP_API_KEY',
   'INFOBIP_SENDER_ID',
@@ -59,7 +59,7 @@ export function validateEnvironmentVariables(): RequiredEnvVars & OptionalEnvVar
             invalid.push(`${envVar}: Contains placeholder value, not real API key`);
           }
           break;
-        case 'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_OR_ANON_KEY':
+        case 'NEXT_PUBLIC_SUPABASE_ANON_KEY':
           if (value === 'your_supabase_anon_key_here' || value.includes('placeholder')) {
             invalid.push(`${envVar}: Contains placeholder value, not real key`);
           }

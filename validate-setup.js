@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+// Audika SMS Setup Validation Tool
+
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');

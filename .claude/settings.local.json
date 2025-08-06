@@ -20,7 +20,14 @@
       "Bash(sed:*)",
       "Bash(dir:*)",
       "Bash(taskkill:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "Bash(node:*)",
+      "Bash(chmod:*)",
+      "Bash(mkdir:*)",
+      "Bash(npx tsc:*)",
+      "Bash(docker build:*)",
+      "Bash(npm run docker:build:*)"
     ],
     "deny": []
   }
