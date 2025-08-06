@@ -11,7 +11,16 @@
       "Bash(export PGPASSWORD=\"xxrde$p#hSyH!z5JBcR$4shgz7QHPs\")",
       "Bash(export PGPASSWORD='xxrde$p#hSyH!z5JBcR$4shgz7QHPs')",
       "Bash(export PGPASSWORD=\"jam-punctual-kept-ecologist-chance\")",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(npm audit:*)",
+      "Bash(npm run dev:*)",
+      "Bash(curl:*)",
+      "Bash(npm run lint:*)",
+      "Bash(pkill:*)",
+      "Bash(sed:*)",
+      "Bash(dir:*)",
+      "Bash(taskkill:*)",
+      "Bash(git add:*)"
     ],
     "deny": []
   }

@@ -440,7 +440,21 @@ export default function UserProfilePage({
       try {
         const supabase = createClient();
 
-        const resolvedParams = await params;
+        // Safely resolve params with error handling
+        let resolvedParams;
+        try {
+          resolvedParams = await params;
+        } catch (error) {
+          console.error('Error resolving params:', error);
+          window.location.href = '/hem';
+          return;
+        }
+
+        if (!resolvedParams?.username) {
+          console.error('No username in params');
+          window.location.href = '/hem';
+          return;
+        }
 
         const { data, error } = await supabase.auth.getUser();
 
@@ -458,12 +472,12 @@ export default function UserProfilePage({
 
         if (isOwn) {
           setTargetUser(data.user);
-          setEditDisplayName(data.user.user_metadata?.display_name || '');
-          setEditBio(data.user.user_metadata?.bio || '');
+          setEditDisplayName(data.user.user_metadata?.['display_name'] || '');
+          setEditBio(data.user.user_metadata?.['bio'] || '');
           setEditSettings({
-            profileVisibility: data.user.user_metadata?.settings?.profileVisibility || 'public',
-            darkMode: data.user.user_metadata?.settings?.darkMode || false,
-            emailNotifications: data.user.user_metadata?.settings?.emailNotifications || true
+            profileVisibility: data.user.user_metadata?.['settings']?.['profileVisibility'] || 'public',
+            darkMode: data.user.user_metadata?.['settings']?.['darkMode'] || false,
+            emailNotifications: data.user.user_metadata?.['settings']?.['emailNotifications'] || true
           });
         } else {
           // Get real user data from database
@@ -505,9 +519,14 @@ export default function UserProfilePage({
 
           setTargetUser(targetUserData);
         }
-      } catch {
-        // Error handled by redirect
-        window.location.href = '/auth/login';
+      } catch (error) {
+        console.error('Error in loadData:', error);
+        // More specific error handling
+        if (error && (error as Error).message?.includes('auth')) {
+          window.location.href = '/auth/login';
+        } else {
+          window.location.href = '/hem';
+        }
       } finally {
         setLoading(false);
       }

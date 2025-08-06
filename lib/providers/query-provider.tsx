@@ -17,8 +17,8 @@ export function QueryProvider({ children }: { children: React.ReactNode }) {
           queries: {
             // Stale time: how long queries stay fresh
             staleTime: 1000 * 60 * 5, // 5 minutes
-            // Cache time: how long inactive queries are cached
-            cacheTime: 1000 * 60 * 30, // 30 minutes
+            // GC time: how long inactive queries are cached
+            gcTime: 1000 * 60 * 30, // 30 minutes
             // Retry failed requests
             retry: 3,
             // Refetch on window focus

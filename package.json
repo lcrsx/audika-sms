@@ -5,7 +5,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "update-types": "npx supabase gen types typescript --project-id vepyqttpljhjdzipervw --schema public > types/supabase.ts"
+    "update-types": "npx supabase gen types typescript --project-id vepyqttpljhjdzipervw --schema public > types/supabase.ts",
+    "install:app": "node install.js",
+    "validate": "node validate-setup.js",
+    "validate:quick": "node validate-setup.js --quick",
+    "docker:build": "docker build -t audika-sms .",
+    "docker:run": "docker run -p 3000:3000 --env-file .env.local audika-sms",
+    "docker:compose": "docker-compose up -d"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.859.0",

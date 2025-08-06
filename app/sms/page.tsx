@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { sendSingleSMS } from '@/lib/actions/messages';
 import { validateAndNormalize } from '@/lib/actions/swe-format';
+import { useDebouncedSearch } from '@/lib/hooks/use-debounced-search';
 import {
   MessageSquare,
   Send,
@@ -20,11 +21,9 @@ import {
   Plus,
   Eye,
   EyeOff,
-  Filter,
   RefreshCw,
   TrendingUp,
   Calendar,
-  Target,
   UserPlus,
   FileText as FileTextIcon,
   Sparkles,
@@ -35,6 +34,8 @@ import {
   Heart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { EnhancedSMSComposer } from '@/components/sms/enhanced-composer';
+import { AdvancedPatientSearch } from '@/components/sms/advanced-patient-search';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { APP_CONFIG, UI_MESSAGES } from '@/lib/config/constants';
@@ -51,6 +52,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { useSMSStatusUpdates, getStatusText, getStatusColorClasses, type SMSStatus } from '@/lib/utils/sms-status-manager';
 
 // ===========================
 // TYPES
@@ -86,7 +88,7 @@ interface Message {
   id: string;
   content: string;
   created_at: string;
-  status: 'pending' | 'sent' | 'delivered' | 'failed';
+  status: SMSStatus;
   patient_cnumber: string;
   recipient_phone: string;
   sender_tag: string;
@@ -139,22 +141,7 @@ const getInitials = (name: string): string => {
       .slice(0, 2) || 'P';
 };
 
-const getStatusColor = (status: string) => {
-  switch (status) {
-    case 'pending':
-      return 'text-yellow-600 bg-yellow-100 dark:text-yellow-400 dark:bg-yellow-900/30';
-    case 'sent':
-      return 'text-blue-600 bg-blue-100 dark:text-blue-400 dark:bg-blue-900/30';
-    case 'delivered':
-      return 'text-green-600 bg-green-100 dark:text-green-400 dark:bg-green-900/30';
-    case 'failed':
-      return 'text-red-600 bg-red-100 dark:text-red-400 dark:bg-red-900/30';
-    default:
-      return 'text-gray-600 bg-gray-100 dark:text-gray-400 dark:bg-gray-900/30';
-  }
-};
-
-const getStatusIcon = (status: string) => {
+const getStatusIcon = (status: SMSStatus) => {
   switch (status) {
     case 'pending':
       return <Clock className="w-3 h-3" />;
@@ -253,11 +240,15 @@ function PatientSearchItem({ patient, onSelect, isSelected, currentUser }: {
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10 }}
-      whileHover={{ scale: 1.02 }}
-      className={`p-4 rounded-2xl border-2 cursor-pointer transition-all duration-300 ${
+      whileHover={{ 
+        y: -2,
+        transition: { duration: 0.2, ease: "easeOut" }
+      }}
+      whileTap={{ scale: 0.98 }}
+      className={`p-4 rounded-2xl border-2 cursor-pointer transition-all duration-300 shadow-sm ${
         isSelected
-          ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/20 shadow-lg'
-          : 'border-white/30 dark:border-gray-700/30 bg-white/50 dark:bg-slate-700/50 hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-md'
+          ? 'border-blue-500 bg-blue-50/50 dark:bg-blue-900/20 shadow-lg hover:shadow-xl'
+          : 'border-white/30 dark:border-gray-700/30 bg-white/50 dark:bg-slate-700/50 hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-lg hover:bg-white dark:hover:bg-slate-700'
       }`}
       onClick={() => onSelect(patient)}
     >
@@ -412,7 +403,41 @@ function MessageTemplateItem({ template, onSelect, isExpanded, onToggle }: {
 
 function RecentMessageItem({ message }: { message: Message }) {
   const [showFullContent, setShowFullContent] = useState(false);
+  const [currentStatus, setCurrentStatus] = useState<SMSStatus>(message.status);
+  const [showStatusUpdate, setShowStatusUpdate] = useState(false);
   const isLongMessage = message.content.length > 100;
+  const statusManager = useSMSStatusUpdates();
+
+  // Schedule status update for 'sent' messages
+  useEffect(() => {
+    if (currentStatus === 'sent') {
+      setShowStatusUpdate(true);
+      
+      // Schedule the status update with callback
+      statusManager.scheduleUpdate(message.id, currentStatus, (newStatus) => {
+        setCurrentStatus(newStatus);
+        setShowStatusUpdate(false);
+        toast.success(`SMS till ${message.recipient_phone} är nu levererat!`);
+      });
+
+      // Show countdown timer
+      const countdownTimer = setTimeout(() => {
+        setShowStatusUpdate(false);
+      }, 60000);
+
+      return () => {
+        clearTimeout(countdownTimer);
+        statusManager.clearUpdate(message.id);
+      };
+    }
+  }, [message.id, message.recipient_phone, currentStatus, statusManager]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      statusManager.clearUpdate(message.id);
+    };
+  }, [message.id, statusManager]);
 
   return (
     <motion.div
@@ -425,17 +450,33 @@ function RecentMessageItem({ message }: { message: Message }) {
         {/* Header with status and time */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Badge className={`text-xs font-medium ${getStatusColor(message.status)}`}>
+            <Badge className={`text-xs font-medium ${getStatusColorClasses(currentStatus)}`}>
               <div className="flex items-center gap-1">
-                {getStatusIcon(message.status)}
-                {message.status === 'sent' ? 'Skickat' :
-                 message.status === 'delivered' ? 'Levererat' : 
-                 message.status === 'pending' ? 'Väntar' : 'Misslyckat'}
+                {getStatusIcon(currentStatus)}
+                {getStatusText(currentStatus)}
+                {showStatusUpdate && currentStatus === 'sent' && (
+                  <motion.span
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="ml-1 text-xs text-blue-500"
+                  >
+                    →📨
+                  </motion.span>
+                )}
               </div>
             </Badge>
             <span className="text-xs text-gray-500 dark:text-gray-400 font-medium">
               {formatRelativeTime(message.created_at)}
             </span>
+            {showStatusUpdate && (
+              <motion.span
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                className="text-xs text-blue-600 dark:text-blue-400 font-medium bg-blue-50 dark:bg-blue-900/30 px-2 py-1 rounded-lg"
+              >
+                Levereras snart...
+              </motion.span>
+            )}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 font-bold">
             {message.sender_tag}
@@ -511,6 +552,7 @@ function RecentMessageItem({ message }: { message: Message }) {
 
 export default function FixedSMSPage() {
   const router = useRouter();
+  const statusManager = useSMSStatusUpdates();
   
   // Form states
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
@@ -522,9 +564,8 @@ export default function FixedSMSPage() {
   const [autoCreatedPatient, setAutoCreatedPatient] = useState<boolean>(false);
 
   // Search states
-  const [patientSearch, setPatientSearch] = useState('');
+  const { searchTerm: patientSearch, debouncedSearchTerm: debouncedPatientSearch, setSearchTerm: setPatientSearch, isSearching } = useDebouncedSearch('', 300);
   const [patients, setPatients] = useState<Patient[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
 
   // Template states
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
@@ -534,7 +575,7 @@ export default function FixedSMSPage() {
   // Message history
   const [recentMessages, setRecentMessages] = useState<Message[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
-  const [messageFilter, setMessageFilter] = useState<'all' | 'sent' | 'delivered' | 'failed'>('all');
+  const [messageFilter, setMessageFilter] = useState<'all' | SMSStatus>('all');
 
   // User state - enhanced with DB user info
   const [currentUser, setCurrentUser] = useState<{ id: string; email?: string; user_metadata?: { display_name?: string; full_name?: string } } | null>(null);
@@ -550,10 +591,12 @@ export default function FixedSMSPage() {
   // Statistics state
   const [stats, setStats] = useState({
     totalMessages: 0,
-    successRate: 0,
     todayCount: 0,
     thisWeekCount: 0
   });
+
+  // Enhanced SMS page with world-class components
+  const [showEnhancedMode, setShowEnhancedMode] = useState(true);
 
   // ===========================
   // ENHANCED DATABASE FUNCTIONS
@@ -595,7 +638,7 @@ export default function FixedSMSPage() {
           );
           
           if (!userValidation.isValid) {
-            console.error('User validation failed:', userValidation.errors);
+            // User validation failed
             setError('Ogiltiga användaruppgifter: ' + userValidation.errors.join(', '));
             return;
           }
@@ -608,14 +651,14 @@ export default function FixedSMSPage() {
             .single();
 
           if (createError) {
-            console.error('Error creating user:', createError);
+            // Error creating user
             setError('Kunde inte skapa användarprofil');
             return;
           }
 
           existingUser = newUser;
         } else if (userError) {
-          console.error('Error fetching user:', userError);
+          // Error fetching user
           setError('Kunde inte ladda användarprofil');
           return;
         }
@@ -640,13 +683,13 @@ export default function FixedSMSPage() {
       return;
     }
 
-    setIsSearching(true);
+    // Loading patients...
     try {
       // Sanitize search query to prevent SQL injection
       const searchValidation = sanitizeSearchQuery(query);
       if (!searchValidation.isValid) {
-        console.error('Invalid search query:', searchValidation.errors);
-        setIsSearching(false);
+        // Invalid search query
+        // Loading complete
         return;
       }
 
@@ -677,7 +720,7 @@ export default function FixedSMSPage() {
         .limit(8);
 
       if (error) {
-        console.error('Patient search error:', error);
+        // Patient search error
         
         // Fallback to simple query without joins
         const { data: fallbackData, error: fallbackError } = await supabase
@@ -734,7 +777,7 @@ export default function FixedSMSPage() {
       setError('Kunde inte söka patienter');
       toast.error('Kunde inte söka patienter');
     } finally {
-      setIsSearching(false);
+      // Loading complete
     }
   }, []);
 
@@ -742,7 +785,7 @@ export default function FixedSMSPage() {
   const loadRecentMessages = useCallback(async () => {
     if (!dbUser) return;
 
-    console.log('🔄 Loading recent messages for user:', dbUser.username);
+    // Loading recent messages
     setMessagesLoading(true);
     try {
       const supabase = createClient();
@@ -771,18 +814,16 @@ export default function FixedSMSPage() {
         .limit(20);
 
       if (error) {
-        console.error('Error loading messages:', error);
+        // Error loading messages
         setError('Kunde inte ladda meddelanden');
         return;
       }
 
-      console.log('✅ Messages loaded:', messages?.length || 0);
+      // Messages loaded
       setRecentMessages(messages || []);
       
       // Calculate statistics
       const totalMessages = messages?.length || 0;
-      const successfulMessages = messages?.filter(m => m.status === 'delivered' || m.status === 'sent').length || 0;
-      const successRate = totalMessages > 0 ? (successfulMessages / totalMessages) * 100 : 0;
 
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -794,15 +835,14 @@ export default function FixedSMSPage() {
 
       setStats({
         totalMessages,
-        successRate: Math.round(successRate),
         todayCount,
         thisWeekCount
       });
       
-      console.log('📊 Stats updated:', { totalMessages, successRate, todayCount, thisWeekCount });
+      // Stats updated
 
     } catch (error) {
-      console.error('❌ Error loading recent messages:', error);
+      console.error('Error loading recent messages:', error);
       setError('Kunde inte ladda meddelanden');
     } finally {
       setMessagesLoading(false);
@@ -826,7 +866,7 @@ const sendMessage = async () => {
   const messageValidation = validateTextContent(message);
   if (!messageValidation.isValid) {
     setError('Meddelandet innehåller otillåtet innehåll: ' + messageValidation.errors.join(', '));
-    logger.security('Malicious message content detected', { metadata: { errors: messageValidation.errors } });
+    logger.warn('Malicious message content detected', { metadata: { errors: messageValidation.errors } });
     return;
   }
 
@@ -884,7 +924,7 @@ const sendMessage = async () => {
           .single();
 
         if (patientError) {
-          console.error('Error creating patient:', patientError);
+          // Error creating patient
           throw new Error('Kunde inte skapa patient: ' + patientError.message);
         }
 
@@ -898,20 +938,20 @@ const sendMessage = async () => {
           });
 
         if (phoneError) {
-          console.error('Error adding phone:', phoneError);
+          // Error adding phone
           // Continue anyway
         }
 
         patientCNumber = autoPatientCNumber;
         createdNewPatient = true;
-        console.log('✅ Created auto-patient:', autoPatientCNumber);
+        // Created auto-patient
       } else {
         patientCNumber = autoPatientCNumber;
       }
     }
 
     // Now ONLY call the server action - it handles SMS + message saving
-    console.log('📱 Calling server action sendSingleSMS...');
+    // Calling server action
     // Use the sanitized message content
     const result = await sendSingleSMS(
       messageValidation.sanitized,
@@ -920,11 +960,11 @@ const sendMessage = async () => {
     );
 
     if (!result.success) {
-      console.error('❌ Server action failed:', result.error);
+      // Server action failed
       throw new Error(result.error || 'Kunde inte skicka SMS');
     }
 
-    console.log('✅ SMS sent successfully via server action');
+    // SMS sent successfully
 
     // Clear form
     setMessage('');
@@ -957,7 +997,7 @@ const sendMessage = async () => {
     }, 7000);
 
   } catch (error) {
-    console.error('❌ Error in message sending process:', error);
+    // Error in message sending
     setError(error instanceof Error ? error.message : UI_MESSAGES.ERRORS.GENERIC);
   } finally {
     setIsSending(false);
@@ -979,7 +1019,7 @@ const sendMessage = async () => {
     if (phone) {
       setPhoneNumber(phone);
     }
-  }, [searchPatients]);
+  }, [searchPatients, setPatientSearch]);
 
   // Validate phone number on change
   useEffect(() => {
@@ -1024,14 +1064,14 @@ const sendMessage = async () => {
     }
   }, [dbUser, loadTemplates, loadRecentMessages]);
 
-  // Search patients when search query changes
+  // Search patients when debounced search query changes
   useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      searchPatients(patientSearch);
-    }, 300);
-
-    return () => clearTimeout(timeoutId);
-  }, [patientSearch, searchPatients]);
+    if (debouncedPatientSearch.trim()) {
+      searchPatients(debouncedPatientSearch);
+    } else {
+      setPatients([]);
+    }
+  }, [debouncedPatientSearch, searchPatients]);
 
   // Clear error after 5 seconds
   useEffect(() => {
@@ -1041,11 +1081,162 @@ const sendMessage = async () => {
     }
   }, [error]);
 
+  // Cleanup status manager on unmount
+  useEffect(() => {
+    return () => {
+      statusManager.cleanup();
+    };
+  }, [statusManager]);
+
   // Filter messages based on status
   const filteredMessages = recentMessages.filter(message => {
     if (messageFilter === 'all') return true;
     return message.status === messageFilter;
   });
+
+  // Handle enhanced SMS composer send
+  const handleEnhancedSend = useCallback(async () => {
+    if (!message.trim() || !selectedPatient || !currentUser || !dbUser) {
+      setError('Kontrollera att alla obligatoriska fält är ifyllda');
+      return;
+    }
+
+    // Validate message content for XSS and malicious content
+    const messageValidation = validateTextContent(message);
+    if (!messageValidation.isValid) {
+      setError('Meddelandet innehåller otillåtet innehåll: ' + messageValidation.errors.join(', '));
+      logger.warn('Malicious message content detected', { metadata: { errors: messageValidation.errors } });
+      return;
+    }
+
+    setIsSending(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      // Get phone number from selected patient
+      const phoneToUse = selectedPatient.patient_phones[0]?.phone;
+      if (!phoneToUse) {
+        throw new Error('Patient har inget telefonnummer');
+      }
+
+      // Validate phone number
+      const validation = validateAndNormalize(phoneToUse);
+      if (!validation.isValid) {
+        throw new Error(validation.error || 'Ogiltigt telefonnummer');
+      }
+
+      // Send SMS using server action
+      const result = await sendSingleSMS(
+        messageValidation.sanitized,
+        phoneToUse,
+        selectedPatient.cnumber
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || 'Kunde inte skicka SMS');
+      }
+
+      // Clear form
+      setMessage('');
+      setSelectedPatient(null);
+      setPatientSearch('');
+      setPatients([]);
+
+      // Show success
+      setSuccess('✅ SMS skickat framgångsrikt!');
+      toast.success('SMS skickat!');
+
+      // Reload messages
+      await loadRecentMessages();
+
+      // Clear success after 5 seconds
+      setTimeout(() => setSuccess(null), 5000);
+
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Kunde inte skicka SMS';
+      setError(errorMsg);
+      toast.error(errorMsg);
+    } finally {
+      setIsSending(false);
+    }
+  }, [message, selectedPatient, currentUser, dbUser, loadRecentMessages, setPatientSearch]);
+
+  // Handle template selection
+  const handleTemplateSelect = useCallback((template: MessageTemplate) => {
+    setMessage(template.content);
+    toast.success(`Mall "${template.name}" använd`);
+  }, []);
+
+  // Handle patient selection from enhanced search
+  const handlePatientSelect = useCallback((patient: Patient) => {
+    setSelectedPatient(patient);
+    setPatientSearch(patient.cnumber);
+    setPatients([]);
+    toast.success(`Patient ${patient.cnumber} vald`);
+  }, [setPatientSearch]);
+
+  // Handle search change from enhanced component
+  const handleSearchChange = useCallback((query: string) => {
+    setPatientSearch(query);
+  }, [setPatientSearch]);
+
+  // Handle new patient creation
+  const handleCreateNewPatient = useCallback(async (cnumber: string) => {
+    if (!dbUser) return;
+
+    try {
+      const supabase = createClient();
+      const autoPatientId = generateSecurePatientId(cnumber);
+      
+      // Create new patient
+      const { data: newPatient, error: patientError } = await supabase
+        .from('patients')
+        .insert({
+          cnumber: autoPatientId,
+          city: 'Auto-generated',
+          is_active: true,
+          created_by: dbUser.id,
+          last_contact_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (patientError) {
+        throw new Error('Kunde inte skapa patient: ' + patientError.message);
+      }
+
+      // Add a placeholder phone number
+      await supabase
+        .from('patient_phones')
+        .insert({
+          patient_id: newPatient.id,
+          phone: '+46700000000', // Placeholder
+          label: 'Mobil'
+        });
+
+      // Create patient object for selection
+      const patientToSelect: Patient = {
+        ...newPatient,
+        patient_phones: [{
+          id: 'temp',
+          phone: '+46700000000',
+          label: 'Mobil',
+          patient_id: newPatient.id
+        }]
+      };
+
+      setSelectedPatient(patientToSelect);
+      setPatientSearch(autoPatientId);
+      setPatients([]);
+      toast.success(`Ny patient "${autoPatientId}" skapad!`);
+      
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Kunde inte skapa patient';
+      setError(errorMsg);
+      toast.error(errorMsg);
+    }
+  }, [dbUser, setPatientSearch]);
 
   // Don't render until we have user data
   if (!currentUser || !dbUser) {
@@ -1153,9 +1344,6 @@ const sendMessage = async () => {
                 <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></div>
                 Inloggad som {dbUser.display_name || dbUser.username}
               </Badge>
-              <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400">
-                Databas synkroniserad ✓
-              </Badge>
             </div>
             
             {/* Navigation buttons */}
@@ -1192,200 +1380,247 @@ const sendMessage = async () => {
             </div>
           </motion.div>
 
-          <div className="grid gap-8 lg:grid-cols-3 max-w-7xl mx-auto">
-            {/* SMS Form Section */}
-            <div className="lg:col-span-2 space-y-6">
-              <SMSCard
-                  title="Skicka SMS"
-                  icon={<Send className="w-6 h-6" />}
-                  gradient="from-green-500/10 to-emerald-500/10"
-              >
-                <div className="space-y-6">
-                  {/* Patient Search */}
-                  <div>
-                    <label className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3 block">
-                      Sök Patient (CNummer) - Valfritt
-                    </label>
-                    <div className="relative">
-                      <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-                      <Input
-                          value={patientSearch}
-                          onChange={(e) => setPatientSearch(e.target.value)}
-                          placeholder="Skriv CNummer för att söka... (lämna tom för att bara använda telefonnummer)"
-                          className="pl-12 pr-4 py-4 bg-white/70 dark:bg-slate-600/70 border-white/30 dark:border-white/20 rounded-2xl text-base focus:ring-2 focus:ring-green-500 transition-all duration-300"
-                      />
-                      {isSearching && (
-                          <Loader2 className="absolute right-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400 animate-spin" />
-                      )}
+          {/* Toggle for Enhanced Mode */}
+          <div className="flex justify-center mb-8">
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setShowEnhancedMode(!showEnhancedMode)}
+              className={`px-8 py-4 rounded-2xl font-bold shadow-lg transition-all duration-300 flex items-center gap-2 ${
+                showEnhancedMode
+                  ? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white hover:shadow-xl'
+                  : 'bg-white/80 dark:bg-slate-700/80 text-gray-700 dark:text-gray-300 hover:bg-white dark:hover:bg-slate-700'
+              }`}
+            >
+              <Sparkles className="w-5 h-5" />
+              {showEnhancedMode ? 'Använd Klassisk Version' : 'Använd Förbättrad Version'}
+            </motion.button>
+          </div>
+
+          {showEnhancedMode ? (
+            /* Enhanced SMS Interface */
+            <div className="grid gap-8 lg:grid-cols-2 max-w-7xl mx-auto">
+              {/* Advanced Patient Search */}
+              <div className="space-y-6">
+                <AdvancedPatientSearch
+                  patients={patients}
+                  isSearching={isSearching}
+                  onPatientSelect={handlePatientSelect}
+                  selectedPatient={selectedPatient}
+                  onSearchChange={handleSearchChange}
+                  onCreateNewPatient={handleCreateNewPatient}
+                />
+              </div>
+
+              {/* Enhanced SMS Composer */}
+              <div className="space-y-6">
+                <EnhancedSMSComposer
+                  selectedPatient={selectedPatient}
+                  message={message}
+                  isSending={isSending}
+                  onMessageChange={setMessage}
+                  onSend={handleEnhancedSend}
+                  templates={templates}
+                  onTemplateSelect={handleTemplateSelect}
+                />
+              </div>
+            </div>
+          ) : (
+            /* Classic SMS Interface */
+            <div className="grid gap-8 lg:grid-cols-3 max-w-7xl mx-auto">
+              {/* SMS Form Section */}
+              <div className="lg:col-span-2 space-y-6">
+                <SMSCard
+                    title="Skicka SMS"
+                    icon={<Send className="w-6 h-6" />}
+                    gradient="from-green-500/10 to-emerald-500/10"
+                >
+                  <div className="space-y-6">
+                    {/* Patient Search */}
+                    <div>
+                      <label className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3 block">
+                        Sök Patient (CNummer) - Valfritt
+                      </label>
+                      <div className="relative">
+                        <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                        <Input
+                            value={patientSearch}
+                            onChange={(e) => setPatientSearch(e.target.value)}
+                            placeholder="Skriv CNummer för att söka... (lämna tom för att bara använda telefonnummer)"
+                            className="pl-12 pr-4 py-4 bg-white/70 dark:bg-slate-600/70 border-white/30 dark:border-white/20 rounded-2xl text-base focus:ring-2 focus:ring-green-500 transition-all duration-300"
+                        />
+                        {isSearching && (
+                            <Loader2 className="absolute right-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400 animate-spin" />
+                        )}
+                      </div>
+
+                      {/* Patient Search Results */}
+                      <AnimatePresence>
+                        {patients.length > 0 && (
+                            <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="mt-4 space-y-3 max-h-80 overflow-y-auto"
+                            >
+                              {patients.map((patient) => (
+                                  <PatientSearchItem
+                                      key={patient.cnumber}
+                                      patient={patient}
+                                      currentUser={currentUser}
+                                      onSelect={(p) => {
+                                        setSelectedPatient(p);
+                                        setPatientSearch(p.cnumber);
+                                        setPatients([]);
+                                        if (p.patient_phones?.[0]) {
+                                          const phone = p.patient_phones[0].phone;
+                                          setPhoneNumber(phone);
+                                          // Force update phone validation
+                                          const validation = validateAndNormalize(phone);
+                                          setPhoneValidation({
+                                            isValid: validation.isValid,
+                                            error: validation.error,
+                                            displayFormat: validation.displayFormat ?? undefined
+                                          });
+                                        }
+                                      }}
+                                      isSelected={selectedPatient?.cnumber === patient.cnumber}
+                                  />
+                              ))}
+                            </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
 
-                    {/* Patient Search Results */}
-                    <AnimatePresence>
-                      {patients.length > 0 && (
-                          <motion.div
-                              initial={{ opacity: 0, height: 0 }}
-                              animate={{ opacity: 1, height: 'auto' }}
-                              exit={{ opacity: 0, height: 0 }}
-                              className="mt-4 space-y-3 max-h-80 overflow-y-auto"
-                          >
-                            {patients.map((patient) => (
-                                <PatientSearchItem
-                                    key={patient.cnumber}
-                                    patient={patient}
-                                    currentUser={currentUser}
-                                    onSelect={(p) => {
-                                      setSelectedPatient(p);
-                                      setPatientSearch(p.cnumber);
-                                      setPatients([]);
-                                      if (p.patient_phones?.[0]) {
-                                        const phone = p.patient_phones[0].phone;
-                                        setPhoneNumber(phone);
-                                        // Force update phone validation
-                                        const validation = validateAndNormalize(phone);
-                                        setPhoneValidation({
-                                          isValid: validation.isValid,
-                                          error: validation.error,
-                                          displayFormat: validation.displayFormat ?? undefined
-                                        });
-                                      }
-                                    }}
-                                    isSelected={selectedPatient?.cnumber === patient.cnumber}
-                                />
-                            ))}
-                          </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
+                    {/* Phone Number Input */}
+                    <div>
+                      <label className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3 block">
+                        Telefonnummer <span className="text-red-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <Phone className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
+                        <Input
+                            value={phoneNumber}
+                            onChange={(e) => setPhoneNumber(e.target.value)}
+                            placeholder="+46701234567 eller 0701234567"
+                            className={`pl-12 pr-12 py-4 bg-white/70 dark:bg-slate-600/70 border-white/30 rounded-2xl text-base focus:ring-2 transition-all duration-300 ${
+                                phoneNumber && !phoneValidation.isValid
+                                    ? 'border-red-500 focus:border-red-500 focus:ring-red-500'
+                                    : phoneValidation.isValid
+                                        ? 'border-green-500 focus:border-green-500 focus:ring-green-500'
+                                        : 'focus:ring-green-500'
+                            }`}
+                            required
+                        />
+                        {phoneValidation.isValid && (
+                            <CheckCircle className="absolute right-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-green-500" />
+                        )}
+                      </div>
+                      
+                      {/* Phone validation feedback */}
+                      <div className="mt-2">
+                        {selectedPatient ? (
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1">
+                              <UserCheck className="w-4 h-4 text-green-600" />
+                              <p className="text-sm text-green-600 dark:text-green-400 font-medium">
+                                Patient {selectedPatient.cnumber} vald
+                              </p>
+                            </div>
+                            {selectedPatient.city === 'Auto-generated' && (
+                              <Badge variant="secondary" className="text-xs bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                                <Sparkles className="w-3 h-3 mr-1" />
+                                Auto-skapad
+                              </Badge>
+                            )}
+                          </div>
+                        ) : phoneValidation.isValid ? (
+                          <div className="flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4 text-green-600" />
+                            <p className="text-sm text-green-600 dark:text-green-400 font-medium">
+                              Giltigt telefonnummer: {phoneValidation.displayFormat}
+                            </p>
+                            <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400">
+                              <UserPlus className="w-3 h-3 mr-1" />
+                              Skapar ny patient
+                            </Badge>
+                          </div>
+                        ) : phoneNumber && phoneValidation.error ? (
+                          <p className="text-sm text-red-600 dark:text-red-400 font-medium">
+                            ✗ {phoneValidation.error}
+                          </p>
+                        ) : (
+                          <p className="text-sm text-blue-600 dark:text-blue-400">
+                            Ange telefonnummer i svenskt format
+                          </p>
+                        )}
+                      </div>
+                    </div>
 
-                  {/* Phone Number Input */}
-                  <div>
-                    <label className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3 block">
-                      Telefonnummer <span className="text-red-500">*</span>
-                    </label>
-                    <div className="relative">
-                      <Phone className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
-                      <Input
-                          value={phoneNumber}
-                          onChange={(e) => setPhoneNumber(e.target.value)}
-                          placeholder="+46701234567 eller 0701234567"
-                          className={`pl-12 pr-12 py-4 bg-white/70 dark:bg-slate-600/70 border-white/30 rounded-2xl text-base focus:ring-2 transition-all duration-300 ${
-                              phoneNumber && !phoneValidation.isValid
-                                  ? 'border-red-500 focus:border-red-500 focus:ring-red-500'
-                                  : phoneValidation.isValid
-                                      ? 'border-green-500 focus:border-green-500 focus:ring-green-500'
-                                      : 'focus:ring-green-500'
-                          }`}
+                    {/* Message Input */}
+                    <div>
+                      <label className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3 block">
+                        Meddelande <span className="text-red-500">*</span>
+                      </label>
+                      <Textarea
+                          value={message}
+                          onChange={(e) => setMessage(e.target.value)}
+                          placeholder="Skriv ditt meddelande här..."
+                          rows={5}
+                          className="bg-white/70 dark:bg-slate-600/70 border-white/30 dark:border-white/20 rounded-2xl resize-none text-base p-4 focus:ring-2 focus:ring-green-500 transition-all duration-300"
                           required
                       />
-                      {phoneValidation.isValid && (
-                          <CheckCircle className="absolute right-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-green-500" />
-                      )}
-                    </div>
-                    
-                    {/* Phone validation feedback */}
-                    <div className="mt-2">
-                      {selectedPatient ? (
-                        <div className="flex items-center gap-2">
-                          <div className="flex items-center gap-1">
-                            <UserCheck className="w-4 h-4 text-green-600" />
-                            <p className="text-sm text-green-600 dark:text-green-400 font-medium">
-                              Patient {selectedPatient.cnumber} vald
-                            </p>
-                          </div>
-                          {selectedPatient.city === 'Auto-generated' && (
-                            <Badge variant="secondary" className="text-xs bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-                              <Sparkles className="w-3 h-3 mr-1" />
-                              Auto-skapad
-                            </Badge>
-                          )}
-                        </div>
-                      ) : phoneValidation.isValid ? (
-                        <div className="flex items-center gap-2">
-                          <CheckCircle className="w-4 h-4 text-green-600" />
-                          <p className="text-sm text-green-600 dark:text-green-400 font-medium">
-                            Giltigt telefonnummer: {phoneValidation.displayFormat}
-                          </p>
-                          <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:text-blue-400">
-                            <UserPlus className="w-3 h-3 mr-1" />
-                            Skapar ny patient
-                          </Badge>
-                        </div>
-                      ) : phoneNumber && phoneValidation.error ? (
-                        <p className="text-sm text-red-600 dark:text-red-400 font-medium">
-                          ✗ {phoneValidation.error}
-                        </p>
-                      ) : (
-                        <p className="text-sm text-blue-600 dark:text-blue-400">
-                          Ange telefonnummer i svenskt format
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Message Input */}
-                  <div>
-                    <label className="text-sm font-bold text-gray-700 dark:text-gray-300 mb-3 block">
-                      Meddelande <span className="text-red-500">*</span>
-                    </label>
-                    <Textarea
-                        value={message}
-                        onChange={(e) => setMessage(e.target.value)}
-                        placeholder="Skriv ditt meddelande här..."
-                        rows={5}
-                        className="bg-white/70 dark:bg-slate-600/70 border-white/30 dark:border-white/20 rounded-2xl resize-none text-base p-4 focus:ring-2 focus:ring-green-500 transition-all duration-300"
-                        required
-                    />
-                    <div className="flex justify-between items-center mt-3">
-                      <span className={`text-sm font-bold ${
-                          message.length > 160
-                              ? message.length > 320
-                                  ? 'text-red-600'
-                                  : 'text-amber-600'
-                              : 'text-gray-500'
-                      }`}>
-                        {message.length}/160 tecken
-                      </span>
-                      {message.length > 160 && (
-                          <span className="text-sm font-bold text-amber-600">
-                          {Math.ceil(message.length / 160)} SMS ({(Math.ceil(message.length / 160) * 0.85).toFixed(2)} SEK)
+                      <div className="flex justify-between items-center mt-3">
+                        <span className={`text-sm font-bold ${
+                            message.length > 160
+                                ? message.length > 320
+                                    ? 'text-red-600'
+                                    : 'text-amber-600'
+                                : 'text-gray-500'
+                        }`}>
+                          {message.length}/160 tecken
                         </span>
+                        {message.length > 160 && (
+                            <span className="text-sm font-bold text-amber-600">
+                            {Math.ceil(message.length / 160)} SMS ({(Math.ceil(message.length / 160) * 0.85).toFixed(2)} SEK)
+                          </span>
+                        )}
+                      </div>
+                      {message.length > 1600 && (
+                          <p className="text-sm text-red-600 mt-1 font-medium">
+                            ⚠️ Meddelandet är för långt (max 1600 tecken)
+                          </p>
                       )}
                     </div>
-                    {message.length > 1600 && (
-                        <p className="text-sm text-red-600 mt-1 font-medium">
-                          ⚠️ Meddelandet är för långt (max 1600 tecken)
-                        </p>
-                    )}
+
+                    {/* Send Button */}
+                    <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
+                      <Button
+                          onClick={sendMessage}
+                          disabled={isSending || !message.trim() || !phoneValidation.isValid || message.length > 1600}
+                          className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold py-6 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-lg"
+                      >
+                        {isSending ? (
+                            <>
+                              <Loader2 className="h-5 w-5 mr-3 animate-spin" />
+                              Skickar & sparar SMS...
+                            </>
+                        ) : (
+                            <>
+                              <Send className="h-5 w-5 mr-3" />
+                              Skicka SMS (Sparas i databas)
+                            </>
+                        )}
+                      </Button>
+                    </motion.div>
+
+                    {/* Required fields notice */}
+                    <p className="text-sm text-gray-500 dark:text-gray-400 text-center">
+                      <span className="text-red-500">*</span> = Obligatoriska fält • Alla meddelanden sparas automatiskt i databasen
+                    </p>
                   </div>
-
-                  {/* Send Button */}
-                  <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-                    <Button
-                        onClick={sendMessage}
-                        disabled={isSending || !message.trim() || !phoneValidation.isValid || message.length > 1600}
-                        className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-bold py-6 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed text-lg"
-                    >
-                      {isSending ? (
-                          <>
-                            <Loader2 className="h-5 w-5 mr-3 animate-spin" />
-                            Skickar & sparar SMS...
-                          </>
-                      ) : (
-                          <>
-                            <Send className="h-5 w-5 mr-3" />
-                            Skicka SMS (Sparas i databas)
-                          </>
-                      )}
-                    </Button>
-                  </motion.div>
-
-                  {/* Required fields notice */}
-                  <p className="text-sm text-gray-500 dark:text-gray-400 text-center">
-                    <span className="text-red-500">*</span> = Obligatoriska fält • Alla meddelanden sparas automatiskt i databasen
-                  </p>
-                </div>
-              </SMSCard>
-            </div>
+                </SMSCard>
+              </div>
 
             {/* Enhanced Sidebar */}
             <div className="space-y-6">
@@ -1447,7 +1682,7 @@ const sendMessage = async () => {
                     transition={{ delay: 0.1 }}
                     className="text-center p-4 rounded-2xl bg-white/40 dark:bg-black/40 hover:bg-white/60 dark:hover:bg-black/60 transition-all duration-300"
                   >
-                    <Target className="h-8 w-8 mx-auto text-blue-500 mb-2" />
+                    <Activity className="h-8 w-8 mx-auto text-blue-500 mb-2" />
                     <p className="text-lg font-bold text-gray-900 dark:text-white">
                       {stats.totalMessages}
                     </p>
@@ -1456,20 +1691,6 @@ const sendMessage = async () => {
                     </p>
                   </motion.div>
 
-                  <motion.div 
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ delay: 0.2 }}
-                    className="text-center p-4 rounded-2xl bg-white/40 dark:bg-black/40 hover:bg-white/60 dark:hover:bg-black/60 transition-all duration-300"
-                  >
-                    <CheckCircle className="h-8 w-8 mx-auto text-green-500 mb-2" />
-                    <p className="text-lg font-bold text-gray-900 dark:text-white">
-                      {stats.successRate}%
-                    </p>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 font-medium">
-                      Framgångsgrad
-                    </p>
-                  </motion.div>
 
                   <motion.div 
                     initial={{ opacity: 0, scale: 0.9 }}
@@ -1503,73 +1724,204 @@ const sendMessage = async () => {
                 </div>
               </SMSCard>
 
-              {/* Recent Messages with Filter */}
-              <SMSCard
-                  title="Dina Senaste Meddelanden"
-                  icon={<History className="w-6 h-6" />}
-                  gradient="from-purple-500/10 to-pink-500/10"
-              >
-                {/* Filter Controls */}
-                <div className="flex items-center gap-3 mb-6">
-                  <Filter className="w-5 h-5 text-gray-500" />
-                  <select
-                    value={messageFilter}
-                    onChange={(e) => setMessageFilter(e.target.value as 'all' | 'sent' | 'delivered' | 'failed')}
-                    className="flex-1 text-sm bg-white/70 dark:bg-slate-600/70 border border-white/30 dark:border-white/20 rounded-xl px-3 py-2 focus:ring-2 focus:ring-purple-500 transition-all duration-300"
-                  >
-                    <option value="all">Alla meddelanden</option>
-                    <option value="sent">Skickade</option>
-                    <option value="delivered">Levererade</option>
-                    <option value="failed">Misslyckade</option>
-                  </select>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={loadRecentMessages}
-                    className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 p-2 hover:bg-white/50 dark:hover:bg-slate-600/50 rounded-xl transition-all duration-300"
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                  </Button>
-                </div>
-
-                {messagesLoading ? (
-                    <div className="text-center py-12">
-                      <Loader2 className="h-12 w-12 animate-spin mx-auto text-purple-500 mb-4" />
-                      <p className="text-sm text-gray-500">Laddar meddelanden...</p>
-                    </div>
-                ) : filteredMessages.length > 0 ? (
-                    <div className="space-y-4 max-h-96 overflow-y-auto">
-                      {filteredMessages.map((msg, index) => (
-                          <motion.div 
-                            key={msg.id}
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ delay: index * 0.1 }}
-                          >
-                            <RecentMessageItem message={msg} />
-                          </motion.div>
-                      ))}
-                    </div>
-                ) : (
-                    <div className="text-center py-12">
-                      <MessageSquare className="h-16 w-16 mx-auto text-gray-400 mb-4" />
-                      <p className="text-sm text-gray-500 font-medium">
-                        {messageFilter === 'all' ? 'Inga meddelanden än' : `Inga ${messageFilter} meddelanden`}
-                      </p>
-                      {messageFilter === 'all' && (
-                        <p className="text-xs text-gray-400 mt-2">Skicka ditt första SMS för att se det här</p>
-                      )}
-                    </div>
-                )}
-              </SMSCard>
             </div>
           </div>
+          )}
+
+          {/* Recent Messages Section - Beautiful Big Card */}
+          <motion.div
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6, delay: 0.3 }}
+              className="max-w-7xl mx-auto"
+          >
+            <SMSCard
+                title="Dina Senaste Meddelanden"
+                icon={<History className="w-6 h-6" />}
+                gradient="from-cyan-500/10 to-blue-500/10"
+                className="min-h-[600px]"
+            >
+              <div className="space-y-6">
+                {/* Filter Buttons */}
+                <div className="flex flex-wrap gap-3 justify-center">
+                  {[
+                    { key: 'all', label: 'Alla', icon: MessageSquare, color: 'from-gray-500 to-gray-600' },
+                    { key: 'sent', label: 'Skickade', icon: Send, color: 'from-blue-500 to-blue-600' },
+                    { key: 'delivered', label: 'Levererade', icon: CheckCircle, color: 'from-green-500 to-green-600' },
+                    { key: 'failed', label: 'Misslyckade', icon: AlertCircle, color: 'from-red-500 to-red-600' }
+                  ].map((filter) => {
+                    const isActive = messageFilter === filter.key;
+                    const Icon = filter.icon;
+                    return (
+                      <motion.button
+                        key={filter.key}
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        onClick={() => setMessageFilter(filter.key as 'all' | SMSStatus)}
+                        className={`px-6 py-3 rounded-2xl font-bold text-sm transition-all duration-300 flex items-center gap-2 shadow-lg hover:shadow-xl ${
+                          isActive
+                            ? `bg-gradient-to-r ${filter.color} text-white`
+                            : 'bg-white/60 dark:bg-slate-700/60 text-gray-700 dark:text-gray-300 hover:bg-white/80 dark:hover:bg-slate-700/80'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4" />
+                        {filter.label}
+                        {filter.key === 'all' && (
+                          <Badge className="ml-1 bg-white/20 text-xs">
+                            {recentMessages.length}
+                          </Badge>
+                        )}
+                        {filter.key !== 'all' && (
+                          <Badge className="ml-1 bg-white/20 text-xs">
+                            {recentMessages.filter(m => m.status === filter.key).length}
+                          </Badge>
+                        )}
+                      </motion.button>
+                    );
+                  })}
+                </div>
+
+                {/* Refresh Button */}
+                <div className="flex justify-center">
+                  <motion.button
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={loadRecentMessages}
+                    disabled={messagesLoading}
+                    className="px-6 py-3 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white font-bold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {messagesLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-4 h-4" />
+                    )}
+                    Uppdatera meddelanden
+                  </motion.button>
+                </div>
+
+                {/* Messages List */}
+                <div className="space-y-4">
+                  {messagesLoading ? (
+                    <div className="text-center py-20">
+                      <Loader2 className="h-16 w-16 animate-spin mx-auto text-cyan-500 mb-6" />
+                      <p className="text-lg text-gray-600 dark:text-gray-400 font-medium">Laddar dina meddelanden...</p>
+                      <p className="text-sm text-gray-500 dark:text-gray-500 mt-2">Detta kan ta några sekunder</p>
+                    </div>
+                  ) : filteredMessages.length > 0 ? (
+                    <motion.div 
+                      className="grid gap-4 max-h-[800px] overflow-y-auto pr-2"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      transition={{ duration: 0.5 }}
+                    >
+                      <AnimatePresence>
+                        {filteredMessages.map((message, index) => (
+                          <motion.div
+                            key={message.id}
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -20 }}
+                            transition={{ duration: 0.3, delay: index * 0.05 }}
+                          >
+                            <RecentMessageItem message={message} />
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+                    </motion.div>
+                  ) : (
+                    <motion.div 
+                      className="text-center py-20"
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.5 }}
+                    >
+                      <div className="relative">
+                        <div className="absolute inset-0 bg-gradient-to-r from-cyan-400/20 to-blue-400/20 rounded-full blur-3xl"></div>
+                        <MessageSquare className="h-24 w-24 mx-auto text-gray-400 mb-6 relative z-10" />
+                      </div>
+                      <h3 className="text-2xl font-bold text-gray-700 dark:text-gray-300 mb-3">
+                        {messageFilter === 'all' ? 'Inga meddelanden ännu' : `Inga ${
+                          messageFilter === 'sent' ? 'skickade' :
+                          messageFilter === 'delivered' ? 'levererade' : 'misslyckade'
+                        } meddelanden`}
+                      </h3>
+                      <p className="text-gray-500 dark:text-gray-400 text-lg mb-6">
+                        {messageFilter === 'all' 
+                          ? 'Skicka ditt första SMS för att se det här!'
+                          : `Ändra filter för att se andra meddelanden`}
+                      </p>
+                      
+                      {messageFilter !== 'all' && recentMessages.length > 0 && (
+                        <motion.button
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          onClick={() => setMessageFilter('all')}
+                          className="px-8 py-4 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white font-bold rounded-2xl shadow-lg hover:shadow-xl transition-all duration-300 flex items-center gap-2 mx-auto"
+                        >
+                          <MessageSquare className="w-5 h-5" />
+                          Visa alla meddelanden ({recentMessages.length})
+                        </motion.button>
+                      )}
+                    </motion.div>
+                  )}
+                </div>
+
+                {/* Quick Stats Row */}
+                {filteredMessages.length > 0 && (
+                  <motion.div 
+                    className="flex justify-center gap-6 pt-6 border-t border-white/20 dark:border-white/10"
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.5, delay: 0.3 }}
+                  >
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">
+                        {filteredMessages.length}
+                      </p>
+                      <p className="text-sm text-gray-600 dark:text-gray-400 font-medium">
+                        {messageFilter === 'all' ? 'Totalt' : 
+                         messageFilter === 'sent' ? 'Skickade' :
+                         messageFilter === 'delivered' ? 'Levererade' : 'Misslyckade'}
+                      </p>
+                    </div>
+                    
+                    {messageFilter === 'all' && (
+                      <>
+                        <div className="text-center">
+                          <p className="text-2xl font-bold text-green-600 dark:text-green-400">
+                            {recentMessages.filter(m => m.status === 'delivered').length}
+                          </p>
+                          <p className="text-sm text-gray-600 dark:text-gray-400 font-medium">Levererade</p>
+                        </div>
+                        
+                        <div className="text-center">
+                          <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
+                            {recentMessages.filter(m => m.status === 'sent').length}
+                          </p>
+                          <p className="text-sm text-gray-600 dark:text-gray-400 font-medium">Skickade</p>
+                        </div>
+                        
+                        {recentMessages.filter(m => m.status === 'failed').length > 0 && (
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-red-600 dark:text-red-400">
+                              {recentMessages.filter(m => m.status === 'failed').length}
+                            </p>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 font-medium">Misslyckade</p>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </motion.div>
+                )}
+              </div>
+            </SMSCard>
+          </motion.div>
 
           {/* Enhanced Information Section */}
           <motion.div
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.6, delay: 0.2 }}
+              transition={{ duration: 0.6, delay: 0.4 }}
               className="max-w-6xl mx-auto"
           >
             <SMSCard
@@ -1624,23 +1976,6 @@ const sendMessage = async () => {
                 ))}
               </div>
 
-              {/* Database Status Display */}
-              <div className="mt-8 p-6 bg-gradient-to-r from-green-50/80 to-emerald-50/80 dark:from-green-900/20 dark:to-emerald-900/20 rounded-2xl border border-green-200/50 dark:border-green-800/50">
-                <div className="flex items-center justify-center gap-4">
-                  <div className="flex items-center gap-2">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-sm font-bold text-green-700 dark:text-green-400">Databas: Ansluten & Synkroniserad</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4 text-green-500" />
-                    <span className="text-sm font-medium text-green-600 dark:text-green-400">Alla meddelanden sparas automatiskt</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Users className="w-4 h-4 text-green-500" />
-                    <span className="text-sm font-medium text-green-600 dark:text-green-400">Patienter skapas vid behov</span>
-                  </div>
-                </div>
-              </div>
             </SMSCard>
           </motion.div>
         </div>

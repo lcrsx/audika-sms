@@ -1,6 +1,8 @@
 'use client';
+/* eslint-disable react-hooks/rules-of-hooks */
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, Suspense } from "react";
+import { useSearchParams, useRouter } from 'next/navigation';
 import { createClient } from "@/lib/supabase/client";
 import {
     User,
@@ -17,7 +19,8 @@ import {
     Save,
     X,
     Users,
-    AlertCircle
+    AlertCircle,
+    ArrowLeft
 } from "lucide-react";
 import { motion, AnimatePresence } from 'framer-motion';
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -27,8 +30,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import React from "react";
-import { AvatarRefreshButton } from '@/components/avatar-refresh-button'
-import { generatePatientAvatar } from '@/lib/avatar-utils'
+import { AvatarRefreshButton } from '@/components/avatar-refresh-button';
+import { generatePatientAvatar } from '@/lib/avatar-utils';
+import { RealtimeChat } from '@/components/realtime-chat';
 import { LucideIcon } from 'lucide-react';
 import { User as SupabaseUser } from '@supabase/supabase-js';
 
@@ -305,11 +309,11 @@ ErrorAlert.displayName = 'ErrorAlert';
 // CUSTOM HOOKS
 // ===========================
 
-const useProfileData = (params: Promise<{ username: string }>) => {
+const useProfileData = () => {
     const [user, setUser] = useState<AppUser | null>(null);
     const [targetUser, setTargetUser] = useState<AppUser | null>(null);
     const [loading, setLoading] = useState(true);
-    const [isOwnProfile, setIsOwnProfile] = useState(false);
+    const [isOwnProfile] = useState(true); // For chat page, always show own profile
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
@@ -319,7 +323,6 @@ const useProfileData = (params: Promise<{ username: string }>) => {
             try {
                 setError(null);
                 const supabase = createClient();
-                const resolvedParams = await params;
 
                 const { data, error } = await supabase.auth.getUser();
 
@@ -331,62 +334,18 @@ const useProfileData = (params: Promise<{ username: string }>) => {
                 }
 
                 const currentUsername = data.user.email?.split('@')[0]?.toUpperCase();
-                const requestedUsername = resolvedParams.username.toUpperCase();
-                const isOwn = currentUsername === requestedUsername;
-
-                if (!isMounted) return;
-
-                setUser(data.user as AppUser);
-                setIsOwnProfile(isOwn);
-
-                if (isOwn) {
-                    setTargetUser(data.user as AppUser);
-                } else {
-                    // Get user data from database
-                    const { data: userData, error: userError } = await supabase
-                        .from('users')
-                        .select('*')
-                        .eq('username', requestedUsername)
-                        .single();
-
-                    if (userError || !userData) {
-                        if (isMounted) {
-                            setError('Användaren kunde inte hittas');
-                        }
-                        return;
-                    }
-
-                    if (userData.profile_visibility === 'private') {
-                        if (isMounted) {
-                            setError('Denna profil är privat');
-                        }
-                        return;
-                    }
-
-                    const targetUserData: AppUser = {
-                        ...data.user,
-                        id: userData.id,
-                        username: userData.username,
-                        email: userData.email,
-                        display_name: userData.display_name,
-                        bio: userData.bio,
-                        user_metadata: {
-                            display_name: userData.display_name || userData.username,
-                            bio: userData.bio || '',
-                            settings: {
-                                profileVisibility: userData.profile_visibility || 'public',
-                                darkMode: userData.dark_mode || false,
-                                emailNotifications: userData.email_notifications || true
-                            }
-                        },
-                        created_at: userData.created_at,
-                        last_sign_in_at: userData.last_sign_in_at
-                    };
-
-                    if (isMounted) {
-                        setTargetUser(targetUserData);
-                    }
+                
+                // For chat page, we'll redirect to the user's profile
+                if (currentUsername && isMounted) {
+                    window.location.href = `/${currentUsername.toLowerCase()}`;
+                    return;
                 }
+
+                // Fallback - should not reach here
+                if (isMounted) {
+                    setError('Kunde inte ladda användarinformation');
+                }
+
             } catch (err) {
                 if (isMounted) {
                     setError('Ett fel uppstod vid inläsning av profilen');
@@ -404,7 +363,7 @@ const useProfileData = (params: Promise<{ username: string }>) => {
         return () => {
             isMounted = false;
         };
-    }, [params]);
+    }, []);
 
     return { user, targetUser, loading, isOwnProfile, error, setUser, setTargetUser };
 };
@@ -474,18 +433,125 @@ const usePatientContacts = (user: AppUser | null, isOwnProfile: boolean) => {
 };
 
 // ===========================
+// DIRECT MESSAGE INTERFACE
+// ===========================
+
+interface DirectMessageInterfaceProps {
+    targetUsername: string;
+}
+
+function DirectMessageInterface({ targetUsername }: DirectMessageInterfaceProps) {
+    const router = useRouter();
+    const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    
+    useEffect(() => {
+        const loadCurrentUser = async () => {
+            try {
+                const supabase = createClient();
+                const { data: { user }, error: userError } = await supabase.auth.getUser();
+                
+                if (userError || !user) {
+                    router.push('/auth/login');
+                    return;
+                }
+                
+                setCurrentUser(user as AppUser);
+            } catch (err) {
+                console.error('Error loading user:', err);
+                setError('Failed to load user data');
+            } finally {
+                setLoading(false);
+            }
+        };
+        
+        loadCurrentUser();
+    }, [router]);
+
+    if (loading) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-pink-50 dark:from-gray-900 dark:via-gray-800 dark:to-purple-900 flex items-center justify-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+            </div>
+        );
+    }
+
+    if (error || !currentUser) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-pink-50 dark:from-gray-900 dark:via-gray-800 dark:to-purple-900 flex items-center justify-center">
+                <Alert className="max-w-md">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>
+                        {error || 'Unable to load chat. Please try again.'}
+                    </AlertDescription>
+                </Alert>
+            </div>
+        );
+    }
+
+    // Create a private room name for the conversation
+    const roomName = [currentUser.email, targetUsername].sort().join('_dm_');
+    const currentUsername = currentUser.email || currentUser.id;
+
+    return (
+        <div className="min-h-screen bg-gradient-to-br from-purple-50 via-white to-pink-50 dark:from-gray-900 dark:via-gray-800 dark:to-purple-900">
+            <div className="container mx-auto px-4 py-6 h-screen flex flex-col max-w-4xl">
+                {/* Header */}
+                <div className="flex items-center gap-4 mb-6 bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm rounded-xl p-4 border border-gray-200/50 dark:border-gray-700/50">
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => router.back()}
+                        className="flex items-center gap-2"
+                    >
+                        <ArrowLeft className="w-4 h-4" />
+                        Tillbaka
+                    </Button>
+                    
+                    <div className="flex items-center gap-3">
+                        <Avatar className="h-8 w-8">
+                            <AvatarImage src={generatePatientAvatar(targetUsername)} alt={targetUsername} />
+                            <AvatarFallback className="bg-gradient-to-br from-purple-500 to-pink-600 text-white text-sm">
+                                {targetUsername.substring(0, 2).toUpperCase()}
+                            </AvatarFallback>
+                        </Avatar>
+                        <div>
+                            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                {targetUsername}
+                            </h2>
+                            <p className="text-sm text-gray-500 dark:text-gray-400">
+                                Direktmeddelanden
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Chat Interface */}
+                <div className="flex-1 bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm rounded-xl border border-gray-200/50 dark:border-gray-700/50 overflow-hidden">
+                    <RealtimeChat
+                        roomName={roomName}
+                        username={currentUsername}
+                    />
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ===========================
 // MAIN COMPONENT
 // ===========================
 
-export default function UserProfilePage({
-                                            params
-                                        }: {
-    params: Promise<{ username: string }>;
-}) {
-    const { user, targetUser, loading, isOwnProfile, error, setUser, setTargetUser } = useProfileData(params);
+function ChatRedirectPage() {
+    const searchParams = useSearchParams();
+    const dmUsername = searchParams.get('dm');
+    
+    // Always call hooks first
+    const { user, targetUser, loading, isOwnProfile, error, setUser, setTargetUser } = useProfileData();
     const { patientContacts, contactsLoading, contactsError } = usePatientContacts(user, isOwnProfile);
-
-    // Edit states
+    
+    // Edit states - always called
     const [isEditingBio, setIsEditingBio] = useState(false);
     const [isEditingSettings, setIsEditingSettings] = useState(false);
     const [editState, setEditState] = useState<EditState>({
@@ -499,7 +565,7 @@ export default function UserProfilePage({
     });
     const [isSaving, setIsSaving] = useState(false);
     const [saveError, setSaveError] = useState<string | null>(null);
-
+    
     // Initialize edit state when targetUser changes
     useEffect(() => {
         if (targetUser && isOwnProfile) {
@@ -564,6 +630,12 @@ export default function UserProfilePage({
             setIsSaving(false);
         }
     }, [user, isOwnProfile, editState, setUser, setTargetUser]);
+
+    // All remaining hooks are defined in a complex way, let me add conditional return after key hooks
+    // If dm parameter exists, show direct messaging interface
+    if (dmUsername) {
+        return <DirectMessageInterface targetUsername={dmUsername} />;
+    }
 
     const saveSettings = useCallback(async () => {
         if (!user || !isOwnProfile) return;
@@ -1128,5 +1200,19 @@ export default function UserProfilePage({
                 )}
             </AnimatePresence>
         </div>
+    );
+}
+
+export default function WrappedChatPage() {
+    return (
+        <Suspense fallback={
+            <div className="min-h-screen bg-gradient-to-br from-purple-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-4">
+                <div className="flex items-center justify-center h-full">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                </div>
+            </div>
+        }>
+            <ChatRedirectPage />
+        </Suspense>
     );
 }

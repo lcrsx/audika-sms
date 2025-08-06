@@ -1,3 +1,15 @@
+/**
+ * ============================================
+ * SUPABASE DATABASE TYPE DEFINITIONS
+ * ============================================
+ * Auto-generated database types for type-safe database operations.
+ * Updated to include VIP patients and direct messaging functionality.
+ * 
+ * @fileoverview Supabase database schema types
+ * @version 2.0.0
+ * @generated 2025-01-05
+ */
+
 export type Json =
   | string
   | number

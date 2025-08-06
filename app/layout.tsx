@@ -3,8 +3,11 @@ import { Geist } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import { Footer } from "@/components/footer";
 import { Header } from "@/components/header";
+import { ScrollToTop } from "@/components/scroll-to-top";
 import ErrorBoundary from "@/components/error-boundary";
 import { QueryProvider } from "@/lib/providers/query-provider";
+import { AutoLogoutProvider } from "@/components/auto-logout-provider";
+import { Toaster } from "sonner";
 import "./globals.css";
 import React from "react";
 
@@ -39,6 +42,7 @@ export default function RootLayout({
                 enableSystem
                 disableTransitionOnChange
             >
+            <AutoLogoutProvider>
             <div className="
             flex flex-col min-h-screen relative overflow-hidden
             bg-gradient-to-br from-gray-50 via-blue-50/50 to-slate-100/80
@@ -97,7 +101,18 @@ export default function RootLayout({
                         <Footer />
                     </div>
                 </div>
+                
+                {/* Global Components */}
+                <ScrollToTop />
+                <Toaster 
+                  position="top-right" 
+                  toastOptions={{
+                    duration: 4000,
+                    className: 'bg-white/90 dark:bg-slate-800/90 backdrop-blur-xl border border-white/20 dark:border-white/10'
+                  }}
+                />
             </div>
+            </AutoLogoutProvider>
             </ThemeProvider>
         </QueryProvider>
         </body>

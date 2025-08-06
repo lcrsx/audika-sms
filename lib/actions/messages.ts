@@ -45,7 +45,7 @@ try {
   // Enhanced SMS content validation
   const contentValidation = validateSMSContent(content);
   if (!contentValidation.isValid) {
-    logger.security('Invalid SMS content detected', { 
+    logger.warn('Invalid SMS content detected', { 
       metadata: { 
         errors: contentValidation.errors,
         warnings: contentValidation.warnings
@@ -57,7 +57,7 @@ try {
   // Healthcare compliance check for medical context
   const healthcareValidation = validateHealthcareSMS(content);
   if (!healthcareValidation.isCompliant) {
-    logger.security('Healthcare SMS compliance violation', {
+    logger.warn('Healthcare SMS compliance violation', {
       metadata: { violations: healthcareValidation.violations }
     });
     throw new Error('SMS innehåller känslig medicinsk information: ' + healthcareValidation.violations.join(', '));
@@ -337,7 +337,6 @@ export async function getMessageStats(): Promise<{
     totalToday: number;
     totalThisWeek: number;
     totalThisMonth: number;
-    successRate: number;
     userTotalToday: number;
   };
   error?: string;
@@ -358,7 +357,7 @@ export async function getMessageStats(): Promise<{
     const senderTag = user.email?.split('@')[0]?.toUpperCase()
 
     // Get all stats in parallel
-    const [todayResult, weekResult, monthResult, successResult, userTodayResult] = await Promise.all([
+    const [todayResult, weekResult, monthResult, userTodayResult] = await Promise.all([
       // Total today (all users)
       supabase
           .from('messages')
@@ -377,12 +376,6 @@ export async function getMessageStats(): Promise<{
           .select('id', { count: 'exact' })
           .gte('created_at', monthAgo.toISOString()),
 
-      // Success rate calculation
-      supabase
-          .from('messages')
-          .select('status')
-          .gte('created_at', weekAgo.toISOString()),
-
       // User total today
       supabase
           .from('messages')
@@ -391,20 +384,12 @@ export async function getMessageStats(): Promise<{
           .gte('created_at', today.toISOString())
     ])
 
-    // Calculate success rate
-    let successRate = 0
-    if (successResult.data && successResult.data.length > 0) {
-      const successful = successResult.data.filter(m => m.status === 'sent' || m.status === 'delivered').length
-      successRate = (successful / successResult.data.length) * 100
-    }
-
     return {
       success: true,
       stats: {
         totalToday: todayResult.count || 0,
         totalThisWeek: weekResult.count || 0,
         totalThisMonth: monthResult.count || 0,
-        successRate: Math.round(successRate),
         userTotalToday: userTodayResult.count || 0
       }
     }

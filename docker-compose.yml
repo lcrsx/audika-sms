@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: audika-sms
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - INFOBIP_API_KEY=${INFOBIP_API_KEY}
+      - INFOBIP_BASE_URL=${INFOBIP_BASE_URL}
+      - INFOBIP_SENDER=${INFOBIP_SENDER}
+    restart: unless-stopped
+    networks:
+      - audika-network
+
+  # Optional: Add Supabase locally for development
+  # Uncomment below to run Supabase locally
+  # supabase-db:
+  #   image: supabase/postgres:15.1.0.117
+  #   container_name: audika-supabase-db
+  #   ports:
+  #     - "54322:5432"
+  #   environment:
+  #     - POSTGRES_PASSWORD=your-super-secret-password
+  #     - POSTGRES_DB=postgres
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   networks:
+  #     - audika-network
+
+  # supabase-auth:
+  #   image: supabase/gotrue:v2.99.0
+  #   container_name: audika-supabase-auth
+  #   depends_on:
+  #     - supabase-db
+  #   ports:
+  #     - "54321:9999"
+  #   environment:
+  #     - GOTRUE_API_HOST=0.0.0.0
+  #     - GOTRUE_API_PORT=9999
+  #     - GOTRUE_DB_DRIVER=postgres
+  #     - GOTRUE_DB_DATABASE_URL=postgres://postgres:your-super-secret-password@supabase-db:5432/postgres?search_path=auth
+  #     - GOTRUE_SITE_URL=http://localhost:3000
+  #     - GOTRUE_URI_ALLOW_LIST=http://localhost:3000
+  #     - GOTRUE_JWT_SECRET=your-jwt-secret
+  #     - GOTRUE_JWT_EXP=3600
+  #   networks:
+  #     - audika-network
+
+networks:
+  audika-network:
+    driver: bridge
+
+volumes:
+  postgres-data:

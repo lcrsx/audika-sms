@@ -31,9 +31,15 @@ import {
   UserCheck,
   UserX,
   X,
-  Save
+  Save,
+  Crown
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { useDebouncedSearch } from '@/lib/hooks/use-debounced-search';
+import { usePagination, paginateArray } from '@/lib/hooks/use-pagination';
+import { EnhancedPagination } from '@/components/enhanced-pagination';
+import { PatientSkeleton, ListSkeleton } from '@/components/ui/loading-skeleton';
+import VIPPatientManager from '@/components/patient-vip-manager';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -73,14 +79,15 @@ import { generatePatientAvatar } from '@/lib/avatar-utils';
 interface Patient {
   id: string;
   cnumber: string;
-  city: string | null;
+  city?: string;
   created_at: string;
   created_by: string;
-  date_of_birth: string | null;
-  gender: 'male' | 'female' | 'other' | null;
-  internal_notes: string | null;
+  date_of_birth?: string;
+  gender?: 'male' | 'female' | 'other';
+  internal_notes?: string;
   is_active: boolean;
-  last_contact_at: string | null;
+  is_vip: boolean;
+  last_contact_at?: string;
   updated_at: string;
   patient_phones: Array<{
     id: string;
@@ -102,7 +109,6 @@ interface PatientStats {
   thisMonth: number;
   thisWeek: number;
   totalMessages: number;
-  successRate: number;
 }
 
 type SortField = 'cnumber' | 'created_at' | 'last_contact_at' | 'total_messages' | 'city';
@@ -113,8 +119,16 @@ export default function PatientCatalog() {
   const router = useRouter();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [filteredPatients, setFilteredPatients] = useState<Patient[]>([]);
+  const [paginatedPatients, setPaginatedPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
+  const { searchTerm: searchQuery, debouncedSearchTerm: debouncedSearchQuery, setSearchTerm: setSearchQuery } = useDebouncedSearch('', 300);
+  
+  // Pagination for performance optimization
+  const pagination = usePagination({
+    totalItems: filteredPatients.length,
+    pageSize: 25, // Optimal for patient cards
+    initialPage: 1
+  });
   const [activeFilter, setActiveFilter] = useState('all');
   const [sortField, setSortField] = useState<SortField>('created_at');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
@@ -124,8 +138,7 @@ export default function PatientCatalog() {
     inactive: 0,
     thisMonth: 0,
     thisWeek: 0,
-    totalMessages: 0,
-    successRate: 0
+    totalMessages: 0
   });
   const [error, setError] = useState<string | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
@@ -157,7 +170,9 @@ export default function PatientCatalog() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [editingPhones, setEditingPhones] = useState<Patient | null>(null);
-
+  
+  // VIP management state
+  const [vipMode, setVipMode] = useState(false);
 
   // Enhanced load patients to get current user info
   const loadPatients = useCallback(async () => {
@@ -170,12 +185,12 @@ export default function PatientCatalog() {
       // Get current user first
       const { data: { user }, error: userError } = await supabase.auth.getUser();
       if (userError || !user) {
-        console.error('User error:', userError);
+        // User not authenticated
         router.push('/auth/login');
         return;
       }
       
-      console.log('👤 Current user ID:', user.id);
+      // Set current user
       setCurrentUser(user);
       
       // Get ALL patients with their phone numbers
@@ -228,30 +243,19 @@ export default function PatientCatalog() {
       
       const totalMessages = patientsWithMessages.reduce((sum, p) => sum + (p.total_messages || 0), 0);
       
-      // Get all messages to calculate proper success rate
-      const { data: allMessages } = await supabase
-        .from('messages')
-        .select('status');
-      
-      const successfulMessages = (allMessages || []).filter(m => 
-        m.status === 'sent' || m.status === 'delivered'
-      ).length;
-      
-      const successRate = totalMessages > 0 ? (successfulMessages / totalMessages) * 100 : 0;
-      
       const stats: PatientStats = {
         total: patientsWithMessages.length,
         active: patientsWithMessages.filter(p => p.is_active).length,
         inactive: patientsWithMessages.filter(p => !p.is_active).length,
         thisMonth: patientsWithMessages.filter(p => new Date(p.created_at) >= thisMonth).length,
         thisWeek: patientsWithMessages.filter(p => new Date(p.created_at) >= thisWeek).length,
-        totalMessages,
-        successRate: Math.round(successRate)
+        totalMessages
       };
       
       setStats(stats);
     } catch (error) {
       console.error('Error loading patients:', error);
+      // Error loading patients
       setError('Kunde inte ladda patienter');
       toast.error('Kunde inte ladda patienter');
     } finally {
@@ -272,13 +276,14 @@ export default function PatientCatalog() {
         .limit(10);
 
       if (error) {
-        console.error('Messages query error:', error);
+        // Messages query failed
         throw error;
       }
       
       setPatientMessages(messages || []);
     } catch (error) {
       console.error('Error loading patient messages:', error);
+      // Error loading messages
       toast.error('Kunde inte ladda meddelanden');
       setPatientMessages([]);
     } finally {
@@ -297,9 +302,9 @@ export default function PatientCatalog() {
       
       const supabase = createClient();
       
-      console.log('📱 Adding phone number:', { patientId, phone: cleanPhone, label });
+      // Adding phone number
       
-      const { data: newPhone, error } = await supabase
+      const { error } = await supabase
         .from('patient_phones')
         .insert({
           patient_id: patientId,
@@ -310,7 +315,7 @@ export default function PatientCatalog() {
         .single();
 
       if (error) {
-        console.error('❌ Phone add error:', error);
+        // Phone add failed
         
         if (error.code === 'PGRST301' || error.code === '42501') {
           throw new Error('Du har inte behörighet att lägga till telefonnummer för denna patient.');
@@ -321,11 +326,11 @@ export default function PatientCatalog() {
         }
       }
       
-      console.log('✅ Phone added successfully:', newPhone);
+      // Phone added successfully
       toast.success('Telefonnummer tillagt!');
       return true;
     } catch (error) {
-      console.error('Error adding phone:', error);
+      // Error adding phone
       const errorMessage = error instanceof Error ? error.message : 'Kunde inte lägga till telefonnummer';
       toast.error(errorMessage);
       return false;
@@ -342,10 +347,19 @@ export default function PatientCatalog() {
         .eq('id', phoneId);
 
       if (error) throw error;
+      
+      // Update local state instead of reloading
+      setPatients(prevPatients => 
+        prevPatients.map(p => ({
+          ...p,
+          patient_phones: p.patient_phones.filter(ph => ph.id !== phoneId)
+        }))
+      );
+      
       toast.success('Telefonnummer borttaget!');
-      loadPatients();
     } catch (error) {
       console.error('Error deleting phone:', error);
+      // Error deleting phone
       toast.error('Kunde inte ta bort telefonnummer');
     }
   };
@@ -364,10 +378,17 @@ export default function PatientCatalog() {
 
       if (error) throw error;
 
+      // Update local state
+      setPatients(prevPatients => 
+        prevPatients.map(p => 
+          p.id === patient.id ? { ...p, is_active: newStatus } : p
+        )
+      );
+      
       toast.success(`Patient ${newStatus ? 'aktiverad' : 'inaktiverad'}!`);
-      loadPatients(); // Reload to update stats
     } catch (error) {
       console.error('Error toggling patient status:', error);
+      // Error toggling status
       toast.error('Kunde inte ändra patientstatus');
     }
   };
@@ -392,11 +413,16 @@ export default function PatientCatalog() {
 
       if (error) throw error;
 
+      // Remove from local state
+      setPatients(prevPatients => 
+        prevPatients.filter(p => p.id !== patient.id)
+      );
+      
       toast.success('Patient borttagen!');
       setDeletingPatient(null);
-      loadPatients();
     } catch (error) {
       console.error('Error deleting patient:', error);
+      // Error deleting patient
       toast.error('Kunde inte ta bort patient');
     } finally {
       setIsSubmitting(false);
@@ -431,7 +457,7 @@ export default function PatientCatalog() {
     try {
       const supabase = createClient();
       
-      console.log('🔄 Updating patient:', editingPatient.cnumber, formData);
+      // Updating patient
       
       // Get current user to check permissions
       const { data: { user }, error: userError } = await supabase.auth.getUser();
@@ -439,8 +465,8 @@ export default function PatientCatalog() {
         throw new Error('Du är inte inloggad');
       }
       
-      console.log('👤 Current user:', user.id);
-      console.log('👤 Patient created by:', editingPatient.created_by);
+      // Current user check
+      // Check patient creator
       
       // Update patient basic info
       const { data: updatedPatient, error } = await supabase
@@ -458,7 +484,7 @@ export default function PatientCatalog() {
         .single();
 
       if (error) {
-        console.error('❌ Database error:', error);
+        // Database error
         
         // Check for specific error types
         if (error.code === 'PGRST301') {
@@ -514,14 +540,20 @@ export default function PatientCatalog() {
         }
       }
 
-      console.log('✅ Patient updated successfully:', updatedPatient);
+      // Update the patient in the local state instead of reloading all patients
+      setPatients(prevPatients => 
+        prevPatients.map(p => 
+          p.id === updatedPatient.id ? { ...updatedPatient, patient_phones: p.patient_phones } : p
+        )
+      );
+      
       toast.success('Patient uppdaterad framgångsrikt!');
       setEditingPatient(null);
       setIsEditing(false);
-      loadPatients();
+      // Don't call loadPatients() - this causes flickering!
       
     } catch (error) {
-      console.error('❌ Error updating patient:', error);
+      // Error updating patient
       const errorMessage = error instanceof Error ? error.message : 'Ett okänt fel inträffade';
       setError(errorMessage);
       toast.error(errorMessage);
@@ -598,9 +630,9 @@ export default function PatientCatalog() {
   useEffect(() => {
     let filtered = patients;
 
-    // Apply search filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase();
+    // Apply search filter using debounced term
+    if (debouncedSearchQuery.trim()) {
+      const query = debouncedSearchQuery.toLowerCase();
       filtered = filtered.filter(patient => 
         patient.cnumber.toLowerCase().includes(query) ||
         patient.city?.toLowerCase().includes(query) ||
@@ -657,7 +689,17 @@ export default function PatientCatalog() {
     });
 
     setFilteredPatients(filtered);
-  }, [patients, searchQuery, activeFilter, sortField, sortDirection]);
+  }, [patients, debouncedSearchQuery, activeFilter, sortField, sortDirection]);
+
+  // Update paginated patients when filtered patients or pagination changes
+  useEffect(() => {
+    const paginated = paginateArray(
+      filteredPatients,
+      pagination.currentPage,
+      pagination.pageSize
+    );
+    setPaginatedPatients(paginated);
+  }, [filteredPatients, pagination.currentPage, pagination.pageSize]);
 
   // Load patients on mount
   useEffect(() => {
@@ -751,6 +793,55 @@ export default function PatientCatalog() {
         return <Clock className="w-3 h-3 text-yellow-500" />;
       default:
         return <MessageSquare className="w-3 h-3 text-gray-400" />;
+    }
+  };
+
+  // VIP management functions
+  const handleVIPStatusChange = async (patientId: string, isVIP: boolean) => {
+    try {
+      const response = await fetch(`/api/patients/${patientId}/vip`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isVIP })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to update VIP status');
+      }
+
+      // Update local state
+      setPatients(prev => prev.map(p => 
+        p.id === patientId ? { ...p, is_vip: isVIP } : p
+      ));
+
+    } catch (error) {
+      console.error('Error updating VIP status:', error);
+      throw error;
+    }
+  };
+
+  const handleBulkVIPChange = async (patientIds: string[], isVIP: boolean) => {
+    try {
+      const response = await fetch('/api/patients/bulk/vip', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patientIds, isVIP })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to update VIP status');
+      }
+
+      // Update local state
+      setPatients(prev => prev.map(p => 
+        patientIds.includes(p.id) ? { ...p, is_vip: isVIP } : p
+      ));
+
+    } catch (error) {
+      console.error('Error in bulk VIP update:', error);
+      throw error;
     }
   };
 
@@ -1765,17 +1856,26 @@ export default function PatientCatalog() {
   if (loading) {
     return (
       <div className="container mx-auto px-4 sm:px-6 py-6 sm:py-8">
-        <div className="animate-pulse">
-          <div className="h-12 bg-gray-200 dark:bg-gray-700 rounded-xl mb-8"></div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-            {[...Array(4)].map((_, i) => (
-              <div key={i} className="h-24 bg-gray-200 dark:bg-gray-700 rounded-xl"></div>
+        <div className="space-y-8">
+          {/* Header skeleton */}
+          <div className="space-y-4">
+            <ListSkeleton count={1} itemHeight={48} />
+          </div>
+          
+          {/* Stats skeleton */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <PatientSkeleton key={i} />
             ))}
           </div>
-          <div className="h-16 bg-gray-200 dark:bg-gray-700 rounded-xl mb-6"></div>
+          
+          {/* Search and filters skeleton */}
+          <ListSkeleton count={1} itemHeight={64} />
+          
+          {/* Patient list skeleton */}
           <div className="space-y-4">
-            {[...Array(6)].map((_, i) => (
-              <div key={i} className="h-20 bg-gray-200 dark:bg-gray-700 rounded-xl"></div>
+            {Array.from({ length: 6 }).map((_, i) => (
+              <PatientSkeleton key={i} />
             ))}
           </div>
         </div>
@@ -1827,10 +1927,24 @@ export default function PatientCatalog() {
             </p>
           </div>
 
-          <Button className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-6 py-3 rounded-xl font-medium shadow-lg hover:shadow-xl transition-all duration-300 flex items-center gap-2 hover:scale-105 group">
-            <UserPlus className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-            Ny Patient
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button 
+              onClick={() => setVipMode(!vipMode)}
+              variant={vipMode ? "default" : "outline"}
+              className={`px-6 py-3 rounded-xl font-medium shadow-lg hover:shadow-xl transition-all duration-300 flex items-center gap-2 hover:scale-105 group ${
+                vipMode 
+                  ? 'bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white' 
+                  : 'border-purple-200 text-purple-600 hover:bg-purple-50 dark:border-purple-800 dark:text-purple-400 dark:hover:bg-purple-900/20'
+              }`}
+            >
+              <Crown className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+              {vipMode ? 'Normal Vy' : 'VIP Hantering'}
+            </Button>
+            <Button className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-6 py-3 rounded-xl font-medium shadow-lg hover:shadow-xl transition-all duration-300 flex items-center gap-2 hover:scale-105 group">
+              <UserPlus className="w-5 h-5 group-hover:rotate-12 transition-transform" />
+              Ny Patient
+            </Button>
+          </div>
         </div>
 
         {/* Enhanced Stats Cards */}
@@ -2009,8 +2123,44 @@ export default function PatientCatalog() {
         </motion.div>
       )}
 
-      {/* Patients List */}
-      {filteredPatients.length === 0 ? (
+      {/* Top Pagination - Only for regular view */}
+      {!vipMode && filteredPatients.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.6 }}
+        >
+          <EnhancedPagination 
+            pagination={pagination}
+            pageSizeOptions={[10, 25, 50, 100]}
+            className="bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm rounded-xl p-4 border border-gray-200/30 dark:border-gray-700/30"
+          />
+        </motion.div>
+      )}
+
+      {/* VIP Manager or Regular Patient List */}
+      {vipMode ? (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.5 }}
+        >
+          <VIPPatientManager 
+            patients={filteredPatients}
+            onVIPStatusChange={handleVIPStatusChange}
+            onBulkVIPChange={handleBulkVIPChange}
+            loading={loading}
+            canModifyVIP={true}
+            vipBadgeVariant="crown"
+            showStats={true}
+            enableBulkOperations={true}
+            className="mb-8"
+          />
+        </motion.div>
+      ) : (
+        <>
+          {/* Regular Patient List */}
+          {filteredPatients.length === 0 ? (
         <motion.div 
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -2037,7 +2187,7 @@ export default function PatientCatalog() {
       ) : (
         <div className="space-y-3">
           <AnimatePresence>
-            {filteredPatients.map((patient, index) => (
+            {paginatedPatients.map((patient, index) => (
               <motion.div
                 key={patient.id}
                 initial={{ opacity: 0, y: 20 }}
@@ -2051,22 +2201,22 @@ export default function PatientCatalog() {
           </AnimatePresence>
         </div>
       )}
+        </>
+      )}
 
-      {/* Footer Info */}
-      {filteredPatients.length > 0 && (
+      {/* Bottom Pagination - Only for regular view */}
+      {!vipMode && filteredPatients.length > 0 && (
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.8 }}
-          className="mt-8 text-center"
+          className="mt-8"
         >
-          <div className="bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm p-4 rounded-xl border border-gray-200/30 dark:border-gray-700/30 inline-block">
-            <p className="text-sm text-gray-600 dark:text-gray-400">
-              Visar {filteredPatients.length} av {patients.length} patienter
-              {searchQuery && ` • Sökning: "${searchQuery}"`}
-              {activeFilter !== 'all' && ` • Filter: ${activeFilter}`}
-            </p>
-          </div>
+          <EnhancedPagination 
+            pagination={pagination}
+            showPageSizeSelector={false}
+            className="bg-white/50 dark:bg-gray-900/50 backdrop-blur-sm rounded-xl p-4 border border-gray-200/30 dark:border-gray-700/30"
+          />
         </motion.div>
       )}
 

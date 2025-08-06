@@ -1,7 +1,17 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { createClient } from '@/lib/supabase/client';
+
+// Lazy load the ViewPatientDialog component
+const ViewPatientDialog = dynamic(() => import('@/components/view-patient-dialog').then(mod => ({ default: mod.ViewPatientDialog })), {
+  loading: () => <div className="flex items-center justify-center p-4"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-500"></div></div>,
+  ssr: false
+});
+import { useDebouncedSearch } from '@/lib/hooks/use-debounced-search';
+import { usePagination, paginateArray } from '@/lib/hooks/use-pagination';
+import { EnhancedPaginationCompact } from '@/components/enhanced-pagination';
 import { getAllRecentMessages, getMessageStats } from '@/lib/actions/messages';
 import { formatForDisplay } from '@/lib/actions/swe-format';
 import { formatRelativeTime } from '@/lib/utils';
@@ -25,7 +35,6 @@ import {
   X,
   Monitor,
   MessageCircle,
-  Copy,
   CheckCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -37,6 +46,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -150,7 +160,7 @@ const StatCard = ({
     whileHover={{ scale: 1.02, y: -5 }}
     whileTap={{ scale: 0.98 }}
     onClick={onClick}
-    className={`relative overflow-hidden bg-gradient-to-br ${gradient} p-6 rounded-2xl text-white shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer group`}
+    className={`relative overflow-hidden bg-gradient-to-br ${gradient} p-6 rounded-2xl text-white shadow-lg hover:shadow-xl transition-all duration-300 ${onClick ? 'cursor-pointer' : 'cursor-default'} group`}
   >
     <div className="relative z-10">
       <div className="flex items-center justify-between mb-4">
@@ -263,16 +273,22 @@ const MessageCard = ({
 // Main Dashboard Component
 export default function SMSDashboard() {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [paginatedMessages, setPaginatedMessages] = useState<Message[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const { searchTerm: searchQuery, debouncedSearchTerm: debouncedSearchQuery, setSearchTerm: setSearchQuery } = useDebouncedSearch('', 300);
   const [error, setError] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<{ id: string; email?: string; user_metadata?: { display_name?: string; full_name?: string } } | null>(null);
   const [topSenders, setTopSenders] = useState<Array<{sender: string, count: number}>>([]);
   const [viewingPatient, setViewingPatient] = useState<Patient | null>(null);
   const [copiedText, setCopiedText] = useState<string | null>(null);
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportOptions, setExportOptions] = useState({
+    messages: true,
+    patients: false,
+    stats: false
+  });
   const [recentChatMessages, setRecentChatMessages] = useState<Array<{
     id: string;
     content: string;
@@ -558,6 +574,81 @@ export default function SMSDashboard() {
     }
   }, []);
 
+  // Export messages to CSV
+  const handleExport = useCallback(async () => {
+    try {
+      const timestamp = new Date().toISOString().split('T')[0];
+      let csvContent = '';
+      let filename = '';
+
+      if (exportOptions.messages) {
+        const headers = ['Datum', 'Tid', 'Patient', 'Telefon', 'Meddelande', 'Status', 'Avsändare'];
+        const rows = messages.map(msg => {
+          const date = new Date(msg.created_at);
+          return [
+            date.toLocaleDateString('sv-SE'),
+            date.toLocaleTimeString('sv-SE'),
+            msg.patient_cnumber || '',
+            msg.recipient_phone || '',
+            msg.content || '',
+            msg.status || 'pending',
+            msg.sender_tag || 'System'
+          ];
+        });
+
+        csvContent += 'MEDDELANDEN\n';
+        csvContent += headers.join(',') + '\n';
+        csvContent += rows.map(row => row.map(cell => `"${cell}"`).join(',')).join('\n');
+        csvContent += '\n\n';
+        filename = `meddelanden_${timestamp}.csv`;
+      }
+
+      if (exportOptions.stats && stats) {
+        csvContent += 'STATISTIK\n';
+        csvContent += 'Kategori,Värde\n';
+        csvContent += `"Totalt meddelanden","${stats.totalMessages}"\n`;
+        csvContent += `"Skickade idag","${stats.sentToday}"\n`;
+        csvContent += `"Aktiva sessioner","${stats.activeSessions}"\n`;
+        csvContent += `"Aktiva patienter","${stats.activePatients}"\n`;
+        csvContent += `"Väntande meddelanden","${stats.pendingMessages}"\n`;
+        csvContent += `"Misslyckade meddelanden","${stats.failedMessages}"\n`;
+        csvContent += '\n\n';
+        filename = filename ? `data_${timestamp}.csv` : `statistik_${timestamp}.csv`;
+      }
+
+      if (exportOptions.patients) {
+        csvContent += 'PATIENTER\n';
+        csvContent += 'OBS: Patientdata export kräver separata behörigheter\n';
+        csvContent += '\n\n';
+        filename = filename ? `komplett_export_${timestamp}.csv` : `patienter_${timestamp}.csv`;
+      }
+
+      if (!csvContent) {
+        toast.error('Inget att exportera - välj minst ett alternativ');
+        return;
+      }
+
+      // Create blob and download
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      
+      link.setAttribute('href', url);
+      link.setAttribute('download', filename);
+      link.style.visibility = 'hidden';
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      toast.success('Data exporterad!');
+      setShowExportDialog(false);
+    } catch (error) {
+      console.error('Export error:', error);
+      toast.error('Kunde inte exportera data');
+    }
+  }, [messages, stats, exportOptions]);
+
   // Load data on mount and when user changes
   useEffect(() => {
     if (currentUser) {
@@ -566,15 +657,6 @@ export default function SMSDashboard() {
       loadSystemEvents();
     }
   }, [currentUser, loadDashboardData, loadRecentChatMessages, loadSystemEvents]);
-
-  // Debounce search query
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedSearchQuery(searchQuery);
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
 
   // Filter messages with debouncing
   const filteredMessages = React.useMemo(() => {
@@ -588,6 +670,23 @@ export default function SMSDashboard() {
       return matchesSearch;
     });
   }, [messages, debouncedSearchQuery]);
+
+  // Pagination for messages
+  const messagesPagination = usePagination({
+    totalItems: filteredMessages.length,
+    pageSize: 10, // Smaller page size for dashboard
+    initialPage: 1
+  });
+
+  // Update paginated messages
+  useEffect(() => {
+    const paginated = paginateArray(
+      filteredMessages,
+      messagesPagination.currentPage,
+      messagesPagination.pageSize
+    );
+    setPaginatedMessages(paginated);
+  }, [filteredMessages, messagesPagination.currentPage, messagesPagination.pageSize]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -704,188 +803,6 @@ export default function SMSDashboard() {
     }
   };
 
-  // View Patient Dialog Component
-  const ViewPatientDialog = () => {
-    if (!viewingPatient) return null;
-
-    return (
-      <Dialog open={!!viewingPatient} onOpenChange={() => setViewingPatient(null)}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Eye className="w-5 h-5 text-blue-500" />
-              Patientdetaljer - {viewingPatient.cnumber}
-            </DialogTitle>
-          </DialogHeader>
-          
-          <div className="space-y-6">
-            {/* Basic Info */}
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">CNummer</label>
-                <p className="text-lg font-semibold text-gray-900 dark:text-white">{viewingPatient.cnumber}</p>
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Status</label>
-                <div className="mt-1">
-                  {getStatusBadge(viewingPatient)}
-                </div>
-              </div>
-              {viewingPatient.city && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Stad</label>
-                  <p className="text-gray-900 dark:text-white">{viewingPatient.city}</p>
-                </div>
-              )}
-              {viewingPatient.gender && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Kön</label>
-                  <p className="text-gray-900 dark:text-white">
-                    {viewingPatient.gender === 'male' ? 'Man' : 
-                     viewingPatient.gender === 'female' ? 'Kvinna' : 'Annat'}
-                  </p>
-                </div>
-              )}
-              {viewingPatient.date_of_birth && (
-                <div>
-                  <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Födelsedatum</label>
-                  <p className="text-gray-900 dark:text-white">
-                    {new Date(viewingPatient.date_of_birth).toLocaleDateString('sv-SE')}
-                  </p>
-                </div>
-              )}
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">Skapad</label>
-                <p className="text-gray-900 dark:text-white">
-                  {formatRelativeTime(viewingPatient.created_at)}
-                </p>
-              </div>
-            </div>
-
-            {/* Phone Numbers */}
-            {viewingPatient.patient_phones.length > 0 && (
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
-                  Telefonnummer
-                </label>
-                <div className="space-y-2">
-                  {viewingPatient.patient_phones.map((phone) => (
-                    <div key={phone.id} className="flex items-center justify-between bg-gray-50 dark:bg-gray-800 p-3 rounded-lg">
-                      <div className="flex items-center gap-2">
-                        <Phone className="w-4 h-4 text-gray-400" />
-                        <span className="font-mono text-gray-900 dark:text-white">{phone.phone}</span>
-                        <Badge variant="outline" className="text-xs">{phone.label}</Badge>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => copyToClipboard(phone.phone, 'Telefonnummer')}
-                        className="h-8 w-8 p-0"
-                      >
-                        {copiedText === phone.phone ? (
-                          <CheckCircle className="w-4 h-4 text-green-500" />
-                        ) : (
-                          <Copy className="w-4 h-4 text-gray-400" />
-                        )}
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Message Stats */}
-            <div>
-              <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
-                Meddelandestatistik
-              </label>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-blue-50 dark:bg-blue-900/30 p-3 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="w-4 h-4 text-blue-500" />
-                    <span className="text-sm text-blue-700 dark:text-blue-400">Totalt</span>
-                  </div>
-                  <p className="text-xl font-bold text-blue-900 dark:text-blue-300">
-                    {viewingPatient.total_messages || 0}
-                  </p>
-                </div>
-                {viewingPatient.last_message_status && (
-                  <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg">
-                    <div className="flex items-center gap-2">
-                      {getMessageStatusIcon(viewingPatient.last_message_status)}
-                      <span className="text-sm text-gray-700 dark:text-gray-400">Senaste status</span>
-                    </div>
-                    <p className="text-xl font-bold text-gray-900 dark:text-gray-300">
-                      {viewingPatient.last_message_status === 'delivered' ? 'Levererat' :
-                       viewingPatient.last_message_status === 'sent' ? 'Skickat' :
-                       viewingPatient.last_message_status === 'failed' ? 'Misslyckat' : 'Väntar'}
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Last Message */}
-            {viewingPatient.last_message_content && (
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
-                  Senaste meddelande
-                </label>
-                <div className="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg">
-                  <div className="flex items-center gap-2 mb-2">
-                    {getMessageStatusIcon(viewingPatient.last_message_status)}
-                    <span className="text-sm text-gray-500">
-                      Från {viewingPatient.last_message_sender} • {formatRelativeTime(viewingPatient.last_message_at || '')}
-                    </span>
-                  </div>
-                  <p className="text-gray-900 dark:text-white">
-                    &quot;{viewingPatient.last_message_content}&quot;
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Internal Notes */}
-            {viewingPatient.internal_notes && (
-              <div>
-                <label className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 block">
-                  Interna anteckningar
-                </label>
-                <div className="bg-yellow-50 dark:bg-yellow-900/30 p-4 rounded-lg border-l-4 border-yellow-400">
-                  <p className="text-gray-900 dark:text-white">{viewingPatient.internal_notes}</p>
-                </div>
-              </div>
-            )}
-          </div>
-          
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setViewingPatient(null)}
-            >
-              Stäng
-            </Button>
-            <Button
-              onClick={() => {
-                // Navigate to SMS page with patient pre-filled
-                const primaryPhone = viewingPatient.patient_phones.find(p => p.label === 'Mobil') || viewingPatient.patient_phones[0];
-                if (primaryPhone) {
-                  window.location.href = `/sms?patient=${viewingPatient.cnumber}&phone=${primaryPhone.phone}`;
-                } else {
-                  window.location.href = `/sms?patient=${viewingPatient.cnumber}`;
-                }
-                setViewingPatient(null);
-              }}
-              className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600"
-            >
-              <Send className="w-4 h-4 mr-2" />
-              Skicka SMS
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    );
-  };
 
   // Clear error after 5 seconds and on component unmount
   useEffect(() => {
@@ -972,7 +889,10 @@ export default function SMSDashboard() {
                 Uppdatera
               </Button>
 
-              <Button className="bg-gradient-to-r from-purple-600 to-pink-600 dark:from-purple-500 dark:to-pink-500 text-white hover:from-purple-700 hover:to-pink-700 dark:hover:from-purple-600 dark:hover:to-pink-600">
+              <Button 
+                onClick={() => setShowExportDialog(true)}
+                className="bg-gradient-to-r from-purple-600 to-pink-600 dark:from-purple-500 dark:to-pink-500 text-white hover:from-purple-700 hover:to-pink-700 dark:hover:from-purple-600 dark:hover:to-pink-600"
+              >
                 <Download className="w-5 h-5 mr-2" />
                 Exportera
               </Button>
@@ -1212,7 +1132,7 @@ export default function SMSDashboard() {
                 </motion.div>
               ) : (
                 <div className="space-y-4">
-                  {filteredMessages.map((message) => (
+                  {paginatedMessages.map((message) => (
                     <MessageCard
                       key={message.id}
                       message={message}
@@ -1220,6 +1140,16 @@ export default function SMSDashboard() {
                       onRetry={handleRetryMessage}
                     />
                   ))}
+                  
+                  {/* Messages Pagination */}
+                  {filteredMessages.length > 10 && (
+                    <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+                      <EnhancedPaginationCompact 
+                        pagination={messagesPagination}
+                        className="justify-center"
+                      />
+                    </div>
+                  )}
                 </div>
               )}
             </AnimatePresence>
@@ -1319,8 +1249,92 @@ export default function SMSDashboard() {
         </div>
       </div>
 
+      {/* Export Dialog */}
+      <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="w-5 h-5" />
+              Exportera data
+            </DialogTitle>
+            <DialogDescription>
+              Välj vilken data du vill exportera till CSV-fil
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div className="space-y-3">
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={exportOptions.messages}
+                  onChange={(e) => setExportOptions(prev => ({ ...prev, messages: e.target.checked }))}
+                  className="rounded border-gray-300"
+                />
+                <div className="flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-blue-500" />
+                  <span>Meddelanden ({messages.length} st)</span>
+                </div>
+              </label>
+              
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={exportOptions.stats}
+                  onChange={(e) => setExportOptions(prev => ({ ...prev, stats: e.target.checked }))}
+                  className="rounded border-gray-300"
+                />
+                <div className="flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-green-500" />
+                  <span>Statistik</span>
+                </div>
+              </label>
+              
+              <label className="flex items-center space-x-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={exportOptions.patients}
+                  onChange={(e) => setExportOptions(prev => ({ ...prev, patients: e.target.checked }))}
+                  className="rounded border-gray-300"
+                />
+                <div className="flex items-center gap-2">
+                  <Users className="w-4 h-4 text-purple-500" />
+                  <span>Patienter (kräver behörighet)</span>
+                </div>
+              </label>
+            </div>
+            
+            <div className="text-xs text-gray-500 bg-gray-50 dark:bg-gray-800 p-3 rounded-lg">
+              Exporten skapas som en CSV-fil som kan öppnas i Excel eller liknande program.
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowExportDialog(false)}>
+              Avbryt
+            </Button>
+            <Button 
+              onClick={handleExport}
+              disabled={!exportOptions.messages && !exportOptions.stats && !exportOptions.patients}
+              className="bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Exportera
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Patient Details Dialog */}
-      <ViewPatientDialog />
+      <ViewPatientDialog 
+        patient={viewingPatient}
+        isOpen={!!viewingPatient}
+        onClose={() => setViewingPatient(null)}
+        copiedText={copiedText}
+        onCopy={copyToClipboard}
+        getStatusBadge={getStatusBadge}
+        getMessageStatusIcon={getMessageStatusIcon}
+      />
     </div>
   );
 }

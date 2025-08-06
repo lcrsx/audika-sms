@@ -111,7 +111,7 @@ export function validateSMSContent(content: string): SMSValidationResult {
   for (const pattern of PROHIBITED_PATTERNS) {
     if (pattern.test(sanitized)) {
       errors.push('SMS content contains prohibited content');
-      logger.security('Prohibited SMS content detected', { 
+      logger.warn('Prohibited SMS content detected', { 
         metadata: { pattern: pattern.toString(), content: sanitized.substring(0, 100) } 
       });
       break;

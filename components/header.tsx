@@ -8,18 +8,16 @@ import {
     X,
     Search,
     Bell,
-    ChevronDown,
     Home,
     MessageSquare,
     Shield,
     LogOut,
-    UserCircle,
-    Settings, 
     MessageSquareMore,
     Sparkles,
     Users,
     ArrowRight,
-    Loader2
+    Loader2,
+    Clock
 } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { ThemeSwitcher } from '@/components/theme-switcher';
@@ -27,14 +25,6 @@ import { Button } from './ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { generateCartoonAvatar } from '@/lib/avatar-utils';
 import { motion, AnimatePresence } from 'framer-motion';
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from './ui/dropdown-menu';
 import {
     Tooltip,
     TooltipContent,
@@ -98,6 +88,8 @@ const navigationItems: NavigationItem[] = [
     { href: '/hem', label: 'Hem', icon: Home, protected: true },
     { href: '/sms', label: 'SMS', icon: MessageSquare, protected: true },
     { href: '/patients', label: 'Patients', icon: Shield, protected: true },
+    { href: '/historik', label: 'Historik', icon: Clock, protected: true },
+    { href: '/users', label: 'Användare', icon: Users, protected: true },
     { href: '/chat', label: 'Chat', icon: MessageSquareMore, protected: true },
 ];
 
@@ -252,27 +244,77 @@ export function Header() {
                 });
             });
 
-            // Search users (from chat messages)
-            const { data: users } = await supabase
+            // Enhanced user search
+            // Search users from multiple sources
+            const userResults: { username: string; source: string; activity?: number }[] = [];
+            
+            // 1. Search users from chat messages
+            const { data: chatUsers } = await supabase
                 .from('chat')
                 .select('username')
                 .ilike('username', `%${query}%`)
-                .limit(3);
+                .limit(10);
 
-            const uniqueUsers = [...new Set(users?.map(u => u.username) || [])];
-            uniqueUsers.forEach(username => {
-                if (!results.find(r => r.type === 'user' && r.title === username)) {
-                    results.push({
-                        id: `user-${username}`,
-                        type: 'user',
-                        title: username,
-                        subtitle: 'Chat användare',
-                        icon: UserCircle,
-                        href: `/chat?dm=${username}`,
-                        metadata: { username }
-                    });
+            chatUsers?.forEach(u => {
+                if (u.username && !userResults.find(r => r.username === u.username)) {
+                    userResults.push({ username: u.username, source: 'chat' });
                 }
             });
+
+            // 2. Search users from SMS messages
+            const { data: smsUsers } = await supabase
+                .from('messages')
+                .select('sender_tag')
+                .ilike('sender_tag', `%${query}%`)
+                .not('sender_tag', 'is', null)
+                .limit(10);
+
+            smsUsers?.forEach(u => {
+                if (u.sender_tag && !userResults.find(r => r.username === u.sender_tag)) {
+                    userResults.push({ username: u.sender_tag, source: 'sms' });
+                }
+            });
+
+            // 3. Get message counts for each user
+            for (const userResult of userResults) {
+                const { count } = await supabase
+                    .from('messages')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('sender_tag', userResult.username);
+                
+                userResult.activity = count || 0;
+            }
+
+            // Sort by activity and add to results
+            userResults
+                .sort((a, b) => (b.activity || 0) - (a.activity || 0))
+                .slice(0, 5)
+                .forEach(({ username, source, activity }) => {
+                    if (!results.find(r => r.type === 'user' && r.title === username)) {
+                        results.push({
+                            id: `user-${username}`,
+                            type: 'user',
+                            title: username,
+                            subtitle: `${source === 'chat' ? 'Chat' : 'SMS'} användare${activity ? ` • ${activity} meddelanden` : ''}`,
+                            icon: Users,
+                            href: `/${username}`,
+                            metadata: { username, source, activity }
+                        });
+                        
+                        // Also add chat option for non-current users
+                        if (username !== user?.username) {
+                            results.push({
+                                id: `chat-${username}`,
+                                type: 'user',
+                                title: `Chatta med ${username}`,
+                                subtitle: 'Direktmeddelande',
+                                icon: MessageSquare,
+                                href: `/chat?dm=${username}`,
+                                metadata: { username, source, activity }
+                            });
+                        }
+                    }
+                });
 
             setSearchResults(results);
         } catch (error) {
@@ -593,7 +635,10 @@ export function Header() {
                                     initial={{ opacity: 0, y: -20 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ duration: 0.4, delay: 0.3 + i*0.1 }}
-                                    whileHover={{ scale: 1.02 }}
+                                    whileHover={{ 
+                                        y: -2,
+                                        transition: { duration: 0.2, ease: "easeOut" }
+                                    }}
                                     whileTap={{ scale: 0.98 }}
                                 >
                                     <Button
@@ -688,7 +733,11 @@ export function Header() {
                                                             key={result.id}
                                                             initial={{ opacity: 0, x: -20 }}
                                                             animate={{ opacity: 1, x: 0 }}
-                                                            whileHover={{ scale: 1.02 }}
+                                                            whileHover={{ 
+                                                                y: -2,
+                                                                transition: { duration: 0.2, ease: "easeOut" }
+                                                            }}
+                                                            whileTap={{ scale: 0.98 }}
                                                             className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200/50 dark:border-gray-700/50 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-all duration-200"
                                                             onClick={() => handleSearchResultClick(result)}
                                                         >
@@ -802,7 +851,11 @@ export function Header() {
                                                             key={notification.id}
                                                             initial={{ opacity: 0, x: -20 }}
                                                             animate={{ opacity: 1, x: 0 }}
-                                                            whileHover={{ scale: 1.02 }}
+                                                            whileHover={{ 
+                                                                y: -2,
+                                                                transition: { duration: 0.2, ease: "easeOut" }
+                                                            }}
+                                                            whileTap={{ scale: 0.98 }}
                                                             className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200/50 dark:border-gray-700/50 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-all duration-200"
                                                             onClick={() => handleNotificationClick(notification)}
                                                         >
@@ -862,47 +915,77 @@ export function Header() {
                             <ThemeSwitcher />
                         </motion.div>
 
-                        {/* Profile */}
+                        {/* Logout Button */}
                         {user && (
-                            <motion.div whileHover={{ scale: 1.02 }} className="relative">
-                                <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                        <Button variant="ghost" className="hidden md:flex items-center space-x-2 px-3 py-2 h-10 rounded-xl bg-white/30 dark:bg-slate-700/30 hover:bg-white/50 dark:hover:bg-slate-600/50 transition-all duration-300">
-                                            <Avatar className="h-6 w-6">
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}>
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={handleLogout}
+                                                className="h-10 w-10 p-0 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 transition-all duration-300"
+                                            >
+                                                <LogOut className="h-4 w-4" />
+                                            </Button>
+                                        </motion.div>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                        <p>Logga ut</p>
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        )}
+
+                        {/* Profile - Larger Avatar & Name (Clickable to Profile) */}
+                        {user && (
+                            <div className="hidden md:flex items-center space-x-3">
+                                <motion.div whileHover={{ 
+                                    y: -2,
+                                    transition: { duration: 0.2, ease: "easeOut" }
+                                }} className="relative">
+                                    <Link href={profile}>
+                                        <Button variant="ghost" className="flex items-center space-x-3 px-4 py-2 h-12 rounded-xl bg-white/30 dark:bg-slate-700/30 hover:bg-white/50 dark:hover:bg-slate-600/50 transition-all duration-300">
+                                            <Avatar className="h-8 w-8">
                                                 {user.avatarUrl ? (
                                                     <AvatarImage src={user.avatarUrl} alt={name} />
                                                 ) : (
                                                     <AvatarImage src={generateCartoonAvatar(name)} alt={name} />
                                                 )}
-                                                <AvatarFallback className="text-white text-xs font-semibold bg-gradient-to-br from-purple-500 to-pink-500">
+                                                <AvatarFallback className="text-white text-sm font-semibold bg-gradient-to-br from-purple-500 to-pink-500">
                                                     {getInitials(name)}
                                                 </AvatarFallback>
                                             </Avatar>
                                             <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{name}</span>
-                                            <ChevronDown className="h-4 w-4 text-gray-500" />
                                         </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent align="end" className="w-56 bg-white/95 dark:bg-gray-900/95 backdrop-blur-xl border-gray-200/50 dark:border-gray-700/50">
-                                        <DropdownMenuLabel className="text-gray-900 dark:text-white">Mitt konto</DropdownMenuLabel>
-                                        <DropdownMenuSeparator className="bg-gray-200 dark:bg-gray-700" />
-                                        <DropdownMenuItem asChild className="hover:bg-purple-50 dark:hover:bg-purple-900/30">
-                                            <Link href={profile} className="flex items-center">
-                                                <UserCircle className="mr-2 h-4 w-4" />
-                                                Profil
-                                            </Link>
-                                        </DropdownMenuItem>
-                                        <DropdownMenuItem className="hover:bg-blue-50 dark:hover:bg-blue-900/30">
-                                                <Settings className="mr-2 h-4 w-4" />
-                                            Inställningar
-                                        </DropdownMenuItem>
-                                        <DropdownMenuSeparator className="bg-gray-200 dark:bg-gray-700" />
-                                        <DropdownMenuItem onClick={handleLogout} className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30">
-                                            <LogOut className="mr-2 h-4 w-4" />
-                                            Logga ut
-                                        </DropdownMenuItem>
-                                    </DropdownMenuContent>
-                                </DropdownMenu>
-                            </motion.div>
+                                    </Link>
+                                </motion.div>
+                                
+                                {/* Logout Button */}
+                                <motion.div whileHover={{ 
+                                    y: -2,
+                                    transition: { duration: 0.2, ease: "easeOut" }
+                                }}>
+                                    <TooltipProvider>
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <Button 
+                                                    variant="ghost" 
+                                                    size="sm"
+                                                    onClick={handleLogout}
+                                                    className="h-10 w-10 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 transition-all duration-300"
+                                                >
+                                                    <LogOut className="h-4 w-4" />
+                                                </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent side="bottom">
+                                                <p>Logga ut</p>
+                                            </TooltipContent>
+                                        </Tooltip>
+                                    </TooltipProvider>
+                                </motion.div>
+                            </div>
                         )}
 
                         {/* Mobile menu button */}

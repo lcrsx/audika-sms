@@ -1,21 +1,24 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { useDebouncedSearch } from '@/lib/hooks/use-debounced-search'
+import { usePagination, paginateArray } from '@/lib/hooks/use-pagination'
+import { EnhancedPagination } from '@/components/enhanced-pagination'
+import { useCache } from '@/lib/hooks/use-cache'
+import { VirtualList } from '@/lib/hooks/use-virtual-scroll'
+import { ListSkeleton } from '@/components/ui/loading-skeleton'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   MessageSquare,
   Search,
   Filter,
   RefreshCw,
-  Loader2,
   Phone,
   User,
   Calendar,
@@ -28,8 +31,6 @@ import {
   TrendingUp,
   BarChart3,
   MessageCircle,
-  Users,
-  Target
 } from 'lucide-react'
 
 /**
@@ -58,7 +59,6 @@ interface Message {
  */
 interface MessageStats {
   totalMessages: number
-  successRate: number
   todayCount: number
   thisWeekCount: number
   thisMonthCount: number
@@ -131,103 +131,145 @@ const getStatusIcon = (status: string) => {
 }
 
 /**
- * Message item component for displaying individual messages
+ * Modern message card component inspired by Able Pro Material design
  */
 function MessageHistoryItem({ message }: { message: Message }) {
   const [showFullContent, setShowFullContent] = useState(false)
-  const isLongMessage = message.content.length > 150
+  const isLongMessage = message.content.length > 120
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 10 }}
+      initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      whileHover={{ scale: 1.01 }}
-      className="p-4 rounded-2xl bg-white/70 dark:bg-slate-800/70 border border-white/30 dark:border-slate-700/30 hover:bg-white/80 dark:hover:bg-slate-800/80 transition-all duration-300 hover:shadow-lg backdrop-blur-sm"
+      whileHover={{ y: -2, transition: { duration: 0.2 } }}
+      className="group relative bg-white dark:bg-gray-800 rounded-3xl shadow-sm hover:shadow-xl border border-gray-100 dark:border-gray-700 transition-all duration-300 overflow-hidden"
     >
-      <div className="space-y-3">
-        {/* Header with status and time */}
+      {/* Gradient accent on hover */}
+      <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-cyan-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300 rounded-3xl" />
+      
+      <div className="relative p-6 space-y-5">
+        {/* Modern Header with clearer sender info */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Badge className={`text-xs font-medium ${getStatusColor(message.status)} border-0`}>
-              <div className="flex items-center gap-1">
-                {getStatusIcon(message.status)}
-                {message.status === 'sent' ? 'Skickat' :
-                 message.status === 'delivered' ? 'Levererat' : 
-                 message.status === 'pending' ? 'Väntar' : 'Misslyckades'}
-              </div>
-            </Badge>
-            <span className="text-xs text-gray-500 dark:text-gray-400 font-medium flex items-center gap-1">
-              <Calendar className="w-3 h-3" />
-              {formatRelativeTime(message.created_at)}
-            </span>
+            {/* Enhanced Status Badge */}
+            <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold shadow-sm ${getStatusColor(message.status)}`}>
+              {getStatusIcon(message.status)}
+              {message.status === 'sent' ? 'Skickat' :
+               message.status === 'delivered' ? 'Levererat' : 
+               message.status === 'pending' ? 'Väntar' : 'Misslyckades'}
+            </div>
+            
+            {/* Enhanced Timestamp */}
+            <div className="flex items-center gap-1.5 text-gray-500 dark:text-gray-400">
+              <Clock className="w-3.5 h-3.5" />
+              <span className="text-xs font-medium">
+                {formatRelativeTime(message.created_at)}
+              </span>
+            </div>
           </div>
-          <div className="text-xs text-gray-500 dark:text-gray-400 font-bold">
-            {message.sender_tag}
+          
+          {/* Enhanced Sender Information */}
+          <div className="flex items-center gap-3 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 rounded-2xl p-3 border border-indigo-100 dark:border-indigo-800/30">
+            <div className="w-10 h-10 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white text-sm font-bold shadow-lg">
+              {(message.sender_display_name || message.sender_tag).charAt(0)}
+            </div>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <p className="text-sm font-bold text-indigo-900 dark:text-indigo-100">
+                  {message.sender_display_name || message.sender_tag}
+                </p>
+                <span className="text-xs bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 px-2 py-0.5 rounded-full font-medium">
+                  Avsändare
+                </span>
+              </div>
+              <p className="text-xs text-indigo-600 dark:text-indigo-400 font-medium">
+                Skickade detta meddelande till patienten
+              </p>
+            </div>
           </div>
         </div>
 
-        {/* Recipient and patient info */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-          <div className="flex items-center gap-2">
-            <Phone className="w-4 h-4 text-blue-500" />
-            <span className="text-gray-700 dark:text-gray-300 font-medium">Till:</span>
-            <span className="text-gray-900 dark:text-white font-mono font-bold">{message.recipient_phone}</span>
+        {/* Enhanced Contact Information */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* Phone Contact Card */}
+          <div className="flex items-center gap-3 p-3 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-2xl border border-green-100 dark:border-green-800/30">
+            <div className="w-9 h-9 bg-green-100 dark:bg-green-900/40 rounded-xl flex items-center justify-center">
+              <Phone className="w-4 h-4 text-green-600 dark:text-green-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs text-green-700 dark:text-green-300 font-semibold mb-0.5">Mottagare</p>
+              <p className="font-mono text-sm font-bold text-green-900 dark:text-green-100 truncate">
+                {message.recipient_phone}
+              </p>
+            </div>
           </div>
           
+          {/* Patient Card */}
           {message.patients && (
-            <div className="flex items-center gap-2">
-              <User className="w-4 h-4 text-purple-500" />
-              <span className="text-gray-700 dark:text-gray-300 font-medium">Patient:</span>
-              <span className="text-gray-900 dark:text-white font-bold">
-                {message.patients.cnumber}
-              </span>
-              {message.patients.city === 'Auto-generated' && (
-                <Badge variant="outline" className="text-xs bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-900/20 dark:text-purple-400">
-                  Auto-skapad
-                </Badge>
-              )}
+            <div className="flex items-center gap-3 p-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-2xl border border-blue-100 dark:border-blue-800/30">
+              <div className="w-9 h-9 bg-blue-100 dark:bg-blue-900/40 rounded-xl flex items-center justify-center">
+                <User className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-blue-700 dark:text-blue-300 font-semibold mb-0.5">Patient</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-bold text-blue-900 dark:text-blue-100">
+                    {message.patients.cnumber}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
         </div>
 
-        {/* Message content */}
+        {/* Enhanced Message Content */}
         <div className="relative">
-          <div className="bg-gray-50/70 dark:bg-gray-800/70 rounded-xl p-3 border border-gray-200/50 dark:border-gray-700/50">
+          <div className="bg-gradient-to-r from-gray-50 via-white to-gray-50 dark:from-gray-700/30 dark:via-gray-800/50 dark:to-gray-700/30 rounded-2xl p-4 border border-gray-200/60 dark:border-gray-600/30 shadow-sm">
             <p className={`text-sm text-gray-700 dark:text-gray-300 leading-relaxed ${
-              isLongMessage && !showFullContent ? 'line-clamp-3' : ''
+              isLongMessage && !showFullContent ? 'line-clamp-4' : ''
             }`}>
               {message.content}
             </p>
           </div>
           
+          {/* Enhanced Show More Button */}
           {isLongMessage && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowFullContent(!showFullContent)}
-              className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 p-0 h-auto text-xs mt-2 hover:scale-105 transition-all duration-200"
+            <motion.div 
+              className="mt-3 flex justify-center"
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
             >
-              {showFullContent ? (
-                <>
-                  <EyeOff className="w-3 h-3 mr-1" />
-                  Visa mindre
-                </>
-              ) : (
-                <>
-                  <Eye className="w-3 h-3 mr-1" />
-                  Visa mer
-                </>
-              )}
-            </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowFullContent(!showFullContent)}
+                className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded-xl px-4 py-2 text-xs font-medium transition-all duration-200 shadow-sm"
+              >
+                {showFullContent ? (
+                  <>
+                    <EyeOff className="w-3.5 h-3.5 mr-2" />
+                    Visa mindre
+                  </>
+                ) : (
+                  <>
+                    <Eye className="w-3.5 h-3.5 mr-2" />
+                    Visa hela meddelandet
+                  </>
+                )}
+              </Button>
+            </motion.div>
           )}
         </div>
 
-        {/* Template info if available */}
+        {/* Enhanced Template Badge */}
         {message.message_templates && (
-          <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400 bg-blue-50/70 dark:bg-blue-900/20 rounded-lg p-2">
-            <MessageCircle className="w-3 h-3" />
-            <span className="font-medium">Mall:</span>
-            <span className="font-bold">{message.message_templates.name}</span>
+          <div className="flex items-center justify-center">
+            <div className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-xl border border-purple-200/60 dark:border-purple-800/40 shadow-sm">
+              <MessageCircle className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+              <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">
+                Mall: <span className="font-bold">{message.message_templates.name}</span>
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -235,57 +277,6 @@ function MessageHistoryItem({ message }: { message: Message }) {
   )
 }
 
-/**
- * Statistics card component
- */
-function StatsCard({ 
-  title, 
-  value, 
-  subtitle, 
-  icon: Icon, 
-  color = "blue",
-  trend
-}: { 
-  title: string
-  value: string | number
-  subtitle: string
-  icon: any
-  color?: string
-  trend?: string
-}) {
-  const colorClasses = {
-    blue: "from-blue-500 to-blue-600 text-blue-600",
-    green: "from-green-500 to-green-600 text-green-600", 
-    purple: "from-purple-500 to-purple-600 text-purple-600",
-    orange: "from-orange-500 to-orange-600 text-orange-600",
-    red: "from-red-500 to-red-600 text-red-600"
-  }
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      whileHover={{ scale: 1.02 }}
-      className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm rounded-2xl p-6 border border-white/30 dark:border-slate-700/30 hover:shadow-lg transition-all duration-300"
-    >
-      <div className="flex items-center justify-between mb-4">
-        <div className={`w-12 h-12 rounded-2xl bg-gradient-to-r ${colorClasses[color]} flex items-center justify-center text-white shadow-lg`}>
-          <Icon className="w-6 h-6" />
-        </div>
-        {trend && (
-          <Badge variant="outline" className={`${colorClasses[color]} border-current text-xs`}>
-            {trend}
-          </Badge>
-        )}
-      </div>
-      <div className="space-y-1">
-        <p className="text-2xl font-bold text-gray-900 dark:text-white">{value}</p>
-        <p className="font-medium text-gray-900 dark:text-white text-sm">{title}</p>
-        <p className="text-xs text-gray-500 dark:text-gray-400">{subtitle}</p>
-      </div>
-    </motion.div>
-  )
-}
 
 /**
  * Main Message History Page Component
@@ -296,13 +287,26 @@ export default function MessageHistoryPage() {
   // State management
   const [messages, setMessages] = useState<Message[]>([])
   const [filteredMessages, setFilteredMessages] = useState<Message[]>([])
+  const [paginatedMessages, setPaginatedMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
+  const { searchTerm, debouncedSearchTerm, setSearchTerm } = useDebouncedSearch('', 300)
   const [statusFilter, setStatusFilter] = useState<'all' | 'sent' | 'delivered' | 'failed' | 'pending'>('all')
+  const [useVirtualization, setUseVirtualization] = useState(false)
+  
+  // Pagination setup for performance optimization
+  const pagination = usePagination({
+    totalItems: filteredMessages.length,
+    pageSize: 20, // Start with 20 items per page for optimal performance
+    initialPage: 1
+  })
+
+  // Enable virtualization for large datasets (>100 items)
+  useEffect(() => {
+    setUseVirtualization(filteredMessages.length > 100)
+  }, [filteredMessages.length])
   const [stats, setStats] = useState<MessageStats>({
     totalMessages: 0,
-    successRate: 0,
     todayCount: 0,
     thisWeekCount: 0,
     thisMonthCount: 0,
@@ -310,7 +314,7 @@ export default function MessageHistoryPage() {
   })
   
   // User state
-  const [currentUser, setCurrentUser] = useState<any>(null)
+  const [currentUser, setCurrentUser] = useState<{id: string; email?: string} | null>(null)
   const [dbUser, setDbUser] = useState<DBUser | null>(null)
 
   /**
@@ -352,47 +356,61 @@ export default function MessageHistoryPage() {
   }, [router])
 
   /**
-   * Load message history from database
+   * Load message history from database with caching
    */
   const loadMessages = useCallback(async () => {
-    if (!dbUser) return
+    if (!dbUser) return []
 
-    setIsLoading(true)
-    setError(null)
+    const supabase = createClient()
     
-    try {
-      const supabase = createClient()
-      
-      // Load all messages for the current user with related data
-      const { data: messagesData, error } = await supabase
-        .from('messages')
-        .select(`
-          *,
-          patients (
-            cnumber,
-            city
-          ),
-          message_templates (
-            name
-          )
-        `)
-        .eq('sender_id', dbUser.id)
-        .order('created_at', { ascending: false })
+    // Load all messages for the current user with related data
+    const { data: messagesData, error } = await supabase
+      .from('messages')
+      .select(`
+        *,
+        patients (
+          cnumber,
+          city
+        ),
+        message_templates (
+          name
+        )
+      `)
+      .eq('sender_id', dbUser.id)
+      .order('created_at', { ascending: false })
 
-      if (error) {
-        console.error('Error loading messages:', error)
-        throw new Error('Kunde inte ladda meddelanden från databasen')
-      }
+    if (error) {
+      console.error('Error loading messages:', error)
+      throw new Error('Kunde inte ladda meddelanden från databasen')
+    }
 
-      setMessages(messagesData || [])
+    return messagesData || []
+  }, [dbUser])
+
+  // Use cached messages with automatic refresh
+  const { 
+    data: cachedMessages, 
+    loading: messagesLoading, 
+    error: messagesError,
+    refresh: refreshMessages 
+  } = useCache(
+    `messages-${dbUser?.id}`,
+    loadMessages,
+    {
+      cacheType: 'messages',
+      ttl: 2 * 60 * 1000, // 2 minutes cache
+      enabled: !!dbUser
+    }
+  )
+
+  // Update local state when cached data changes
+  useEffect(() => {
+    if (cachedMessages) {
+      setMessages(cachedMessages)
       
       // Calculate statistics
-      if (messagesData && messagesData.length > 0) {
-        const totalMessages = messagesData.length
-        const successfulMessages = messagesData.filter(m => 
-          m.status === 'delivered' || m.status === 'sent'
-        ).length
-        const successRate = Math.round((successfulMessages / totalMessages) * 100)
+      if (cachedMessages && cachedMessages.length > 0) {
+        const totalMessages = cachedMessages.length
 
         // Calculate time-based counts
         const now = new Date()
@@ -400,39 +418,38 @@ export default function MessageHistoryPage() {
         const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
         const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-        const todayCount = messagesData.filter(m => 
+        const todayCount = cachedMessages.filter(m => 
           new Date(m.created_at) >= today
         ).length
 
-        const thisWeekCount = messagesData.filter(m => 
+        const thisWeekCount = cachedMessages.filter(m => 
           new Date(m.created_at) >= weekAgo
         ).length
 
-        const thisMonthCount = messagesData.filter(m => 
+        const thisMonthCount = cachedMessages.filter(m => 
           new Date(m.created_at) >= monthAgo
         ).length
 
         // Calculate average message length
-        const totalLength = messagesData.reduce((sum, m) => sum + m.content.length, 0)
+        const totalLength = cachedMessages.reduce((sum, m) => sum + m.content.length, 0)
         const averageMessageLength = Math.round(totalLength / totalMessages)
 
         setStats({
           totalMessages,
-          successRate,
           todayCount,
           thisWeekCount,
           thisMonthCount,
           averageMessageLength
         })
       }
-
-    } catch (error) {
-      console.error('Error loading messages:', error)
-      setError(error instanceof Error ? error.message : 'Ett fel inträffade')
-    } finally {
-      setIsLoading(false)
     }
-  }, [dbUser])
+  }, [cachedMessages])
+
+  // Update loading and error states
+  useEffect(() => {
+    setIsLoading(messagesLoading)
+    setError(messagesError?.message || null)
+  }, [messagesLoading, messagesError])
 
   /**
    * Filter messages based on search query and status
@@ -445,9 +462,9 @@ export default function MessageHistoryPage() {
       filtered = filtered.filter(message => message.status === statusFilter)
     }
 
-    // Filter by search query
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
+    // Filter by search query using debounced term
+    if (debouncedSearchTerm.trim()) {
+      const query = debouncedSearchTerm.toLowerCase()
       filtered = filtered.filter(message => 
         message.content.toLowerCase().includes(query) ||
         message.recipient_phone.includes(query) ||
@@ -457,7 +474,19 @@ export default function MessageHistoryPage() {
     }
 
     setFilteredMessages(filtered)
-  }, [messages, searchQuery, statusFilter])
+  }, [messages, debouncedSearchTerm, statusFilter])
+
+  /**
+   * Update paginated messages when filtered messages or pagination changes
+   */
+  useEffect(() => {
+    const paginated = paginateArray(
+      filteredMessages, 
+      pagination.currentPage, 
+      pagination.pageSize
+    )
+    setPaginatedMessages(paginated)
+  }, [filteredMessages, pagination.currentPage, pagination.pageSize])
 
   // Load messages when user is ready
   useEffect(() => {
@@ -466,22 +495,30 @@ export default function MessageHistoryPage() {
     }
   }, [dbUser, loadMessages])
 
+  // Render virtual message item
+  const renderVirtualMessage = useCallback(({ item: message, style }: {
+    item: Message;
+    index: number;
+    style: React.CSSProperties;
+  }) => (
+    <div style={style} className="px-1 py-2">
+      <MessageHistoryItem message={message} />
+    </div>
+  ), [])
+
   // Show loading spinner if not ready
   if (!currentUser || !dbUser || isLoading) {
     return (
       <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-center space-y-4">
-            <Loader2 className="h-12 w-12 animate-spin mx-auto text-blue-600" />
-            <p className="text-gray-500 dark:text-gray-400">Laddar meddelandehistorik...</p>
-          </div>
+        <div className="space-y-4">
+          <ListSkeleton count={3} itemHeight={200} />
         </div>
       </div>
     )
   }
 
   return (
-    <div className="flex-1 w-full max-w-7xl mx-auto py-32 px-4 sm:px-6 lg:px-8 relative">
+    <div className="flex-1 w-full max-w-7xl mx-auto pt-32 pb-16 px-4 sm:px-6 lg:px-8 relative">
       {/* Animated background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute -top-40 -right-40 w-80 h-80 bg-gradient-to-br from-blue-400/20 via-indigo-400/15 to-purple-600/20 rounded-full blur-3xl animate-pulse" style={{ animationDuration: '4s' }} />
@@ -496,11 +533,11 @@ export default function MessageHistoryPage() {
           transition={{ duration: 0.8 }}
           className="text-center space-y-4"
         >
-          <div className="flex items-center justify-center gap-4 mb-6">
+          <div className="flex items-center justify-start mb-8">
             <Button
-              variant="ghost"
+              variant="outline"
               onClick={() => router.back()}
-              className="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+              className="bg-white/80 dark:bg-slate-700/80 border-white/50 dark:border-slate-600/50 hover:bg-gray-50 dark:hover:bg-slate-600/80 text-gray-700 dark:text-gray-300 px-6 py-3 rounded-xl shadow-sm transition-all duration-300"
             >
               <ArrowLeft className="w-4 h-4 mr-2" />
               Tillbaka
@@ -525,56 +562,64 @@ export default function MessageHistoryPage() {
           </Badge>
         </motion.div>
 
-        {/* Statistics Cards */}
+        {/* Statistics Cards - Modern Row Layout */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.2 }}
-          className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4"
+          className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm rounded-3xl p-8 border border-white/30 dark:border-slate-700/30 shadow-lg"
         >
-          <StatsCard
-            title="Totalt"
-            value={stats.totalMessages}
-            subtitle="Skickade meddelanden"
-            icon={MessageCircle}
-            color="blue"
-            trend={stats.thisMonthCount > 0 ? `+${stats.thisMonthCount} denna månad` : undefined}
-          />
-          <StatsCard
-            title="Framgångsgrad"
-            value={`${stats.successRate}%`}
-            subtitle="Levererade meddelanden" 
-            icon={Target}
-            color="green"
-          />
-          <StatsCard
-            title="Idag"
-            value={stats.todayCount}
-            subtitle="Meddelanden idag"
-            icon={Calendar}
-            color="purple"
-          />
-          <StatsCard
-            title="Denna vecka"
-            value={stats.thisWeekCount}
-            subtitle="Senaste 7 dagarna"
-            icon={TrendingUp}
-            color="orange"
-          />
-          <StatsCard
-            title="Denna månad"
-            value={stats.thisMonthCount}
-            subtitle="Senaste 30 dagarna"
-            icon={BarChart3}
-            color="red"
-          />
-          <StatsCard
-            title="Genomsnitt"
-            value={`${stats.averageMessageLength}`}
-            subtitle="Tecken per meddelande"
-            icon={MessageSquare}
-            color="blue"
-          />
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
+            {/* Total Messages */}
+            <div className="text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-r from-blue-500 to-blue-600 flex items-center justify-center text-white shadow-lg">
+                <MessageCircle className="w-8 h-8" />
+              </div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{stats.totalMessages}</div>
+              <div className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Totalt</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Skickade meddelanden</div>
+            </div>
+
+            {/* Today */}
+            <div className="text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-r from-purple-500 to-purple-600 flex items-center justify-center text-white shadow-lg">
+                <Calendar className="w-8 h-8" />
+              </div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{stats.todayCount}</div>
+              <div className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Idag</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Meddelanden idag</div>
+            </div>
+
+            {/* This Week */}
+            <div className="text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-r from-orange-500 to-orange-600 flex items-center justify-center text-white shadow-lg">
+                <TrendingUp className="w-8 h-8" />
+              </div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{stats.thisWeekCount}</div>
+              <div className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Denna vecka</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Senaste 7 dagarna</div>
+            </div>
+
+            {/* This Month */}
+            <div className="text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-r from-red-500 to-red-600 flex items-center justify-center text-white shadow-lg">
+                <BarChart3 className="w-8 h-8" />
+              </div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{stats.thisMonthCount}</div>
+              <div className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Denna månad</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Senaste 30 dagarna</div>
+            </div>
+
+            {/* Average Length */}
+            <div className="text-center">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-r from-green-500 to-green-600 flex items-center justify-center text-white shadow-lg">
+                <MessageSquare className="w-8 h-8" />
+              </div>
+              <div className="text-3xl font-bold text-gray-900 dark:text-white mb-1">{stats.averageMessageLength}</div>
+              <div className="text-sm font-semibold text-gray-900 dark:text-white mb-1">Genomsnitt</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">Tecken per meddelande</div>
+            </div>
+          </div>
         </motion.div>
 
         {/* Search and Filter Controls */}
@@ -588,8 +633,8 @@ export default function MessageHistoryPage() {
             <div className="flex-1 relative">
               <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 h-5 w-5 text-gray-400" />
               <Input
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Sök i meddelanden, telefonnummer eller patienter..."
                 className="pl-12 bg-white/80 dark:bg-slate-700/80 border-white/50 dark:border-slate-600/50 rounded-xl h-12"
               />
@@ -599,10 +644,10 @@ export default function MessageHistoryPage() {
               <Filter className="w-5 h-5 text-gray-500" />
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
+                onChange={(e) => setStatusFilter(e.target.value as 'all' | 'sent' | 'delivered' | 'failed' | 'pending')}
                 className="bg-white/80 dark:bg-slate-700/80 border border-white/50 dark:border-slate-600/50 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-purple-500 transition-all duration-300"
               >
-                <option value="all">Alla status</option>
+                <option value="all">Alla meddelanden</option>
                 <option value="sent">Skickade</option>
                 <option value="delivered">Levererade</option>
                 <option value="pending">Väntande</option>
@@ -612,7 +657,7 @@ export default function MessageHistoryPage() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={loadMessages}
+                onClick={() => refreshMessages()}
                 className="bg-white/80 dark:bg-slate-700/80 border-white/50 dark:border-slate-600/50 hover:bg-purple-50 dark:hover:bg-purple-900/20 px-4 py-3 h-12"
               >
                 <RefreshCw className="w-4 h-4" />
@@ -621,7 +666,7 @@ export default function MessageHistoryPage() {
           </div>
           
           <div className="mt-4 text-sm text-gray-600 dark:text-gray-400">
-            Visar {filteredMessages.length} av {messages.length} meddelanden
+            Filtrerar {filteredMessages.length} av {messages.length} meddelanden
           </div>
         </motion.div>
 
@@ -641,17 +686,56 @@ export default function MessageHistoryPage() {
           )}
         </AnimatePresence>
 
+        {/* Pagination - only show when not using virtualization */}
+        {!useVirtualization && filteredMessages.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.6 }}
+          >
+            <EnhancedPagination 
+              pagination={pagination}
+              pageSizeOptions={[10, 20, 50, 100]}
+              className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm rounded-2xl p-4 border border-white/30 dark:border-slate-700/30"
+            />
+          </motion.div>
+        )}
+
         {/* Messages List */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.6 }}
+          transition={{ duration: 0.6, delay: 0.8 }}
           className="space-y-4"
         >
-          {filteredMessages.length > 0 ? (
+          {useVirtualization && filteredMessages.length > 0 ? (
+            // Virtual scrolling for large datasets
+            <div className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm rounded-2xl border border-white/30 dark:border-slate-700/30 overflow-hidden">
+              <VirtualList
+                items={filteredMessages}
+                itemHeight={220} // Approximate height of MessageHistoryItem
+                height={600} // Container height
+                renderItem={renderVirtualMessage}
+                overscan={3}
+                className="p-4"
+                emptyComponent={
+                  <div className="text-center py-16">
+                    <MessageSquare className="h-16 w-16 mx-auto text-gray-400 mb-4" />
+                    <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
+                      Inga meddelanden hittade
+                    </h3>
+                    <p className="text-gray-500 dark:text-gray-400">
+                      Försök ändra dina sökkriterier eller filter
+                    </p>
+                  </div>
+                }
+              />
+            </div>
+          ) : paginatedMessages.length > 0 ? (
+            // Regular pagination for smaller datasets
             <div className="space-y-4">
               <AnimatePresence>
-                {filteredMessages.map((message, index) => (
+                {paginatedMessages.map((message, index) => (
                   <motion.div
                     key={message.id}
                     initial={{ opacity: 0, y: 20 }}
@@ -669,14 +753,14 @@ export default function MessageHistoryPage() {
               <div className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm rounded-2xl p-12 border border-white/30 dark:border-slate-700/30">
                 <MessageSquare className="h-16 w-16 mx-auto text-gray-400 mb-4" />
                 <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">
-                  {searchQuery || statusFilter !== 'all' ? 'Inga matchande meddelanden' : 'Inga meddelanden än'}
+                  {debouncedSearchTerm || statusFilter !== 'all' ? 'Inga matchande meddelanden' : 'Inga meddelanden än'}
                 </h3>
                 <p className="text-gray-500 dark:text-gray-400 mb-6">
-                  {searchQuery || statusFilter !== 'all' 
+                  {debouncedSearchTerm || statusFilter !== 'all' 
                     ? 'Försök ändra dina sökkriterier eller filter' 
                     : 'Skicka ditt första SMS för att se historik här'}
                 </p>
-                {!searchQuery && statusFilter === 'all' && (
+                {!debouncedSearchTerm && statusFilter === 'all' && (
                   <Button
                     onClick={() => router.push('/sms')}
                     className="bg-gradient-to-r from-purple-500 to-pink-600 hover:from-purple-600 hover:to-pink-700 text-white"
@@ -689,6 +773,21 @@ export default function MessageHistoryPage() {
             </div>
           )}
         </motion.div>
+
+        {/* Bottom Pagination - only show when not using virtualization */}
+        {!useVirtualization && filteredMessages.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 1.0 }}
+          >
+            <EnhancedPagination 
+              pagination={pagination}
+              showPageSizeSelector={false}
+              className="bg-white/70 dark:bg-slate-800/70 backdrop-blur-sm rounded-2xl p-4 border border-white/30 dark:border-slate-700/30"
+            />
+          </motion.div>
+        )}
       </div>
     </div>
   )

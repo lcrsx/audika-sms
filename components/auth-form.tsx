@@ -68,10 +68,26 @@ export function AuthForm({
                 token: otp,
                 type: "email",
             });
-            if (error) throw error;
+            
+            if (error) {
+                // Special handling for 403 errors - might be Supabase configuration issue
+                if (error.message.includes('403') || error.message.includes('Forbidden')) {
+                    throw new Error("Autentiseringsfel - Supabase konfiguration behöver kontrolleras");
+                }
+                
+                // Skip token validation errors for console spam reduction
+                if (error.message.includes('Token has expired or is invalid')) {
+                    console.warn('Token validation failed, but continuing with authentication');
+                    // Continue with normal error handling
+                }
+                
+                throw error;
+            }
+            
             router.push("/hem");
         } catch (err: unknown) {
-            setError(err instanceof Error ? err.message : "Ogiltig kod. Försök igen.");
+            const errorMessage = err instanceof Error ? err.message : "Ogiltig kod. Försök igen.";
+            setError(errorMessage);
         } finally {
             setIsLoading(false);
         }

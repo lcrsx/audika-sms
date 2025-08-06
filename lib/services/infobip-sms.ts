@@ -212,156 +212,27 @@ export async function sendSMS(params: SendSMSParams): Promise<SMSResult> {
   }
 }
 
-// Fixed simulated SMS with correct database fields
-export async function sendSMSSimulated(params: SendSMSParams): Promise<{
-  success: boolean;
-  messageId?: string;
-  error?: string;
-}> {
-  const {
-    content,
-    recipientPhone,
-    patientCnumber,
-    senderId,
-    senderEmail
-  } = params;
-
-  // Ensure sender_tag is exactly 4 characters as required by schema
-  const senderTag = (senderEmail?.split('@')[0]?.toUpperCase().slice(0, 4).padEnd(4, 'X')) || 'USER';
-  const senderDisplayName = senderEmail?.split('@')[0]?.toUpperCase() || 'USER';
-
-  try {
-    // Simulate network delay
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Simulate 95% success rate
-    const simulatedSuccess = Math.random() > 0.05;
-
-    if (!simulatedSuccess) {
-      return {
-        success: false,
-        error: 'Simulerad SMS-fel för testning'
-      };
-    }
-
-    // Generate fake message ID
-    const fakeMessageId = `sim_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    // Save to database with CORRECT field names
-    try {
-      const supabase = await createClient();
-      
-      // Prepare message data with EXACT field names from schema
-      const messageData = {
-        sender_id: senderId,                    // uuid - matches schema
-        sender_tag: senderTag,                  // character varying (4 chars) - matches schema
-        patient_cnumber: patientCnumber,        // text - matches schema
-        recipient_phone: recipientPhone,        // text - matches schema
-        content: content,                       // text - matches schema
-        status: 'sent' as const,                // message_status enum - matches schema
-        infobip_message_id: fakeMessageId,      // text - matches schema
-        sender_display_name: senderDisplayName, // text - matches schema
-        sent_at: new Date().toISOString(),      // timestamp - optional field
-        created_at: new Date().toISOString()    // timestamp - has default
-      };
-
-      console.log('💾 [SIMULATED] Inserting message with data:', messageData);
-
-      const { data: insertedMessage, error: insertError } = await supabase
-        .from('messages')
-        .insert(messageData)
-        .select()
-        .single();
-
-      if (insertError) {
-        console.error('❌ [SIMULATED] DB insert error:', insertError);
-        console.error('❌ [SIMULATED] Failed data:', messageData);
-      } else {
-        console.log('✅ [SIMULATED] Message saved to database:', insertedMessage.id);
-      }
-
-    } catch (dbError) {
-      console.error('❌ [SIMULATED] Database exception:', dbError);
-    }
-
-    // Update patient if real cnumber
-    try {
-      if (patientCnumber && patientCnumber.startsWith('C')) {
-        const supabase = await createClient();
-        const { error: updateError } = await supabase
-            .from('patients')
-            .update({
-              last_contact_at: new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            })
-            .eq('cnumber', patientCnumber);
-
-        if (updateError) {
-          console.error('[SIMULATED] Patient update error:', updateError);
-        } else {
-          console.log('✅ [SIMULATED] Patient updated successfully');
-        }
-      }
-    } catch (updateError) {
-      console.error('[SIMULATED] Patient update exception:', updateError);
-    }
-
-    console.log(`📱 [SIMULATED] SMS SENT:
-      To: ${recipientPhone}
-      Patient: ${patientCnumber}
-      Content: ${content.substring(0, 50)}${content.length > 50 ? '...' : ''}
-      Message ID: ${fakeMessageId}
-    `);
-
-    return {
-      success: true,
-      messageId: fakeMessageId
-    };
-
-  } catch (error: unknown) {
-    console.error('[SIMULATED] SMS error:', error);
-    return {
-      success: false,
-      error: (error as Error)?.message || 'Simuleringsfel'
-    };
-  }
-}
-
 /**
- * Check if we should use simulated SMS (for development)
- * Returns true if Infobip credentials are not properly configured
- */
-export function shouldUseSimulation(): boolean {
-  const hasApiKey = !!process.env.INFOBIP_API_KEY;
-  const hasBaseUrl = !!process.env.INFOBIP_BASE_URL;
-  const isDevelopment = process.env.NODE_ENV === 'development';
-  
-  console.log('🔧 SMS Configuration:', {
-    hasApiKey,
-    hasBaseUrl,
-    isDevelopment,
-    baseUrl: process.env.INFOBIP_BASE_URL ? 'Set' : 'Not set',
-    apiKey: process.env.INFOBIP_API_KEY ? 'Set' : 'Not set'
-  });
-  
-  // In production, only use simulation if credentials are missing
-  return !hasApiKey || !hasBaseUrl;
-}
-
-/**
- * Main SMS sending function that automatically chooses between real and simulated
- * This is what your actions should call
+ * Main SMS sending function - PRODUCTION ONLY with real Infobip API
+ * Requires proper Infobip credentials to be configured
  */
 export async function sendSMSWithFallback(params: SendSMSParams): Promise<{
   success: boolean;
   messageId?: string;
   error?: string;
 }> {
-  if (shouldUseSimulation()) {
-    console.log('🧪 Using simulated SMS sending (development mode or missing credentials)');
-    return sendSMSSimulated(params);
-  } else {
-    console.log('📡 Using real Infobip SMS API');
-    return sendSMS(params);
+  // Validate required Infobip credentials
+  const hasApiKey = !!process.env.INFOBIP_API_KEY;
+  const hasBaseUrl = !!process.env.INFOBIP_BASE_URL;
+  
+  if (!hasApiKey || !hasBaseUrl) {
+    logger.error('Missing required Infobip credentials', new Error('SMS service not configured'));
+    return {
+      success: false,
+      error: 'SMS-tjänsten är inte korrekt konfigurerad. Kontakta administratören.'
+    };
   }
+
+  logger.info('Using Infobip SMS API for real SMS sending');
+  return sendSMS(params);
 }
